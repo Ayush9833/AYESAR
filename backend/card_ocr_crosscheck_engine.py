@@ -21,6 +21,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from difflib import SequenceMatcher
 from PIL import Image
 import numpy as np
+import cv2
 
 # Deep learning OCR
 import easyocr
@@ -52,7 +53,9 @@ class CardOcrCrossCheckEngine:
     def extract_printed_text(self, image_input: Any) -> Dict[str, Any]:
         """
         Extracts all printed text lines with confidence scores and bounding boxes using EasyOCR.
+        Robustly handles Base64 Data URLs, raw bytes, filepaths, PIL Images, and NumPy arrays.
         """
+        img_np = None
         if isinstance(image_input, str):
             if image_input.startswith("data:image") or len(image_input) > 200:
                 try:
@@ -60,22 +63,36 @@ class CardOcrCrossCheckEngine:
                         encoded = image_input.split(",", 1)[1]
                     else:
                         encoded = image_input
-                    image_path = base64.b64decode(encoded)
-                except Exception:
-                    image_path = image_input
-            else:
-                image_path = image_input
+                    raw_bytes = base64.b64decode(encoded.strip())
+                    nparr = np.frombuffer(raw_bytes, np.uint8)
+                    img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except Exception as b64_err:
+                    print(f"[OCR] Base64 decode error: {b64_err}")
+            elif os.path.exists(image_input):
+                img_np = cv2.imread(image_input)
         elif isinstance(image_input, Image.Image):
-            buf = io.BytesIO()
-            image_input.save(buf, format='JPEG')
-            image_path = buf.getvalue()
+            img_np = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
         elif isinstance(image_input, bytes):
-            image_path = image_input
-        else:
-            raise ValueError("Unsupported image input type")
+            nparr = np.frombuffer(image_input, np.uint8)
+            img_np = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        elif isinstance(image_input, np.ndarray):
+            img_np = image_input
+
+        if img_np is None:
+            return {
+                "full_text": "",
+                "lines": [],
+                "parsed_fields": {},
+                "total_lines_detected": 0
+            }
 
         # Run CRAFT text detection + recognition
-        ocr_results = self.reader.readtext(image_path)
+        ocr_results = self.reader.readtext(img_np)
+        if len(ocr_results) == 0:
+            # Contrast enhance if needed
+            gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+            enhanced = cv2.equalizeHist(gray)
+            ocr_results = self.reader.readtext(enhanced)
 
         extracted_lines = []
         raw_text_list = []
@@ -91,6 +108,9 @@ class CardOcrCrossCheckEngine:
                 raw_text_list.append(text_clean)
 
         full_text = "\n".join(raw_text_list)
+        print(f"[OCR] Extracted {len(raw_text_list)} text lines:")
+        for t in raw_text_list[:10]:
+            print(f"   -> {t}")
 
         # Parse potential printed fields via heuristic matching
         parsed_fields = self._parse_fields_from_ocr(raw_text_list, full_text)
@@ -103,46 +123,90 @@ class CardOcrCrossCheckEngine:
         }
 
     def _parse_fields_from_ocr(self, lines: List[str], full_text: str) -> Dict[str, Any]:
-        """Heuristically extracts Name, DOB, Gender, and 12-digit Aadhaar UID from OCR text."""
+        """Heuristically extracts Name, DOB, Gender, ID, and Address from OCR text."""
         fields = {
             "printed_name": None,
             "printed_dob": None,
             "printed_gender": None,
-            "printed_uid": None
+            "printed_uid": None,
+            "printed_address": None
         }
 
-        # 1. Look for 12-digit Aadhaar number pattern (XXXX XXXX XXXX or 12 digits)
+        # 1. Look for ID numbers (Aadhaar 12-digit, PAN, Passport, Nepali Citizenship)
         uid_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', full_text)
+        pan_match = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', full_text)
+        passport_match = re.search(r'\b([A-Z][0-9]{7,8})\b', full_text)
+        compact_uid = re.search(r'\b\d{12}\b', full_text)
+        nepal_id = re.search(r'\b\d{2,4}[-\s\/]\d{2,5}[-\s\/]\d{2,6}\b', full_text)
+
         if uid_match:
             fields["printed_uid"] = uid_match.group(1).replace(" ", "")
-        else:
-            compact_match = re.search(r'\b\d{12}\b', full_text)
-            if compact_match:
-                fields["printed_uid"] = compact_match.group(0)
+        elif compact_uid:
+            fields["printed_uid"] = compact_uid.group(0)
+        elif pan_match:
+            fields["printed_uid"] = pan_match.group(1)
+        elif passport_match:
+            fields["printed_uid"] = passport_match.group(1)
+        elif nepal_id:
+            fields["printed_uid"] = nepal_id.group(0)
 
-        # 2. Look for DOB pattern: DD/MM/YYYY or DD-MM-YYYY
-        dob_match = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-](0[1-9]|1[0-2])[\/\-](19\d\d|20\d\d)\b', full_text)
+        # 2. Look for DOB pattern: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD
+        dob_match = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.](0[1-9]|1[0-2])[\/\-\.](19\d\d|20\d\d)\b', full_text)
+        iso_dob = re.search(r'\b(19\d\d|20\d\d)[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b', full_text)
         if dob_match:
-            fields["printed_dob"] = dob_match.group(0)
+            fields["printed_dob"] = dob_match.group(0).replace(".", "/")
+        elif iso_dob:
+            fields["printed_dob"] = iso_dob.group(0)
         else:
-            yob_match = re.search(r'(?:Year of Birth|YOB|DOB)[\s\:\-]+(\d{4})', full_text, re.IGNORECASE)
+            yob_match = re.search(r'(?:Year of Birth|YOB|DOB|जन्म)[\s\:\-]+(\d{4})', full_text, re.IGNORECASE)
             if yob_match:
                 fields["printed_dob"] = f"01/01/{yob_match.group(1)}"
 
         # 3. Look for Gender (MALE / FEMALE / TRANSGENDER)
-        if re.search(r'\b(MALE|FEMALE|TRANSGENDER)\b', full_text, re.IGNORECASE):
-            g_match = re.search(r'\b(MALE|FEMALE|TRANSGENDER)\b', full_text, re.IGNORECASE)
+        g_match = re.search(r'\b(MALE|FEMALE|TRANSGENDER|पुरुष|महिला)\b', full_text, re.IGNORECASE)
+        if g_match:
             fields["printed_gender"] = g_match.group(1).capitalize()
 
-        # 4. Extract Name (typically line above DOB, ignoring Government of India headers)
-        for i, line in enumerate(lines):
-            clean = line.strip()
-            if re.search(r'(?:DOB|Date of Birth|जन्म|Year of Birth)', clean, re.IGNORECASE):
-                if i > 0:
-                    candidate = lines[i - 1].strip()
-                    if not re.search(r'(Government|India|Unique|Identification|Authority|भारत|सरकार)', candidate, re.IGNORECASE):
-                        fields["printed_name"] = candidate
+        # 4. Extract Name
+        # Check explicit label first: Name:, Name / नाम, Given Names
+        for line in lines:
+            name_label_match = re.search(r'(?:Name|नाम|Given Names?|Elector[\'s]*\s*Name)[\s\:\-]+([A-Za-z\s]+)', line, re.IGNORECASE)
+            if name_label_match:
+                candidate = name_label_match.group(1).strip()
+                if len(candidate) > 2 and not re.search(r'(Government|India|Authority)', candidate, re.IGNORECASE):
+                    fields["printed_name"] = candidate
+                    break
+
+        # If still no name, check line above DOB
+        if not fields["printed_name"]:
+            for i, line in enumerate(lines):
+                clean = line.strip()
+                if re.search(r'(?:DOB|Date of Birth|जन्म|Year of Birth)', clean, re.IGNORECASE):
+                    if i > 0:
+                        candidate = lines[i - 1].strip()
+                        if not re.search(r'(Government|India|Unique|Identification|Authority|भारत|सरकार|Enrolment)', candidate, re.IGNORECASE):
+                            fields["printed_name"] = candidate
+                            break
+
+        # Fallback: scan for any clean 2-4 word alphabetic capitalized name
+        if not fields["printed_name"]:
+            ignore_words = {'GOVERNMENT', 'INDIA', 'UNIQUE', 'IDENTIFICATION', 'AUTHORITY', 'ENROLMENT', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'ADDRESS', 'DEPARTMENT', 'REPUBLIC', 'ELECTION', 'COMMISSION', 'PASSPORT', 'SIGNATURE', 'CARD', 'NATIONAL', 'CITIZENSHIP', 'BHUTAN', 'NEPAL'}
+            for line in lines:
+                clean = line.strip()
+                words = clean.split()
+                if 2 <= len(words) <= 4 and all(w.isalpha() and len(w) > 1 for w in words):
+                    upper_clean = clean.upper()
+                    if not any(bad in upper_clean for bad in ignore_words):
+                        fields["printed_name"] = clean.title()
                         break
+
+        # Fallback: if lines exist but nothing matched, take first non-governmental text line
+        if not fields["printed_name"] and len(lines) > 0:
+            for line in lines:
+                clean = line.strip()
+                if len(clean) > 3 and not re.search(r'(Government|India|Authority|Unique|Identification|भारत|सरकार)', clean, re.IGNORECASE):
+                    fields["printed_name"] = clean
+                    break
 
         return fields
 

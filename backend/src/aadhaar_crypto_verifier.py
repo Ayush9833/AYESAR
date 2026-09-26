@@ -127,6 +127,17 @@ class SatyapanAadhaarVerifier:
         # Execute C++ zxing scan
         barcodes = zxingcpp.read_barcodes(img)
         if not barcodes:
+            # Multi-contrast fallback for blurry/glare webcams
+            try:
+                import cv2
+                np_img = np.array(img)
+                gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
+                _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+                barcodes = zxingcpp.read_barcodes(Image.fromarray(thresh))
+            except Exception:
+                pass
+
+        if not barcodes:
             return None
 
         # Prefer QR Code format
