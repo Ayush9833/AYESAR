@@ -12,18 +12,16 @@ Pipelines Integrated:
 
 import os
 import time
+
+# Suppress verbose TensorFlow / oneDNN logs
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+
 from typing import Dict, Any, Optional
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
-
-# Import SATYAPAN Defense Engines
-from aadhaar_crypto_verifier import SatyapanAadhaarVerifier as AadhaarCryptoVerifier
-from card_ocr_crosscheck_engine import CardOcrCrossCheckEngine as CardOCRCrossCheckEngine
-from face_restoration_engine import FaceRestorationEngine
-from live_face_matcher_engine import LiveFaceMatcherEngine
-from anti_spoofing_liveness_engine import AntiSpoofingLivenessEngine
 
 app = FastAPI(
     title="SATYAPAN Tactical Border Defense API",
@@ -40,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Lazy singletons for performance
+# Lazy singletons for high-speed startup
 _crypto_verifier = None
 _ocr_engine = None
 _restoration_engine = None
@@ -51,14 +49,24 @@ _liveness_engine = None
 def get_engines():
     global _crypto_verifier, _ocr_engine, _restoration_engine, _face_matcher, _liveness_engine
     if _crypto_verifier is None:
+        print("  [AI ENGINE] Initializing Aadhaar Cryptography & QR Engine...")
+        from aadhaar_crypto_verifier import SatyapanAadhaarVerifier as AadhaarCryptoVerifier
         _crypto_verifier = AadhaarCryptoVerifier()
     if _ocr_engine is None:
+        print("  [AI ENGINE] Initializing EasyOCR Engine...")
+        from card_ocr_crosscheck_engine import CardOcrCrossCheckEngine as CardOCRCrossCheckEngine
         _ocr_engine = CardOCRCrossCheckEngine()
     if _restoration_engine is None:
+        print("  [AI ENGINE] Initializing Face Restoration Engine...")
+        from face_restoration_engine import FaceRestorationEngine
         _restoration_engine = FaceRestorationEngine()
     if _face_matcher is None:
+        print("  [AI ENGINE] Initializing DeepFace ArcFace Biometric Matcher...")
+        from live_face_matcher_engine import LiveFaceMatcherEngine
         _face_matcher = LiveFaceMatcherEngine(model_name="ArcFace", distance_metric="cosine", detector_backend="skip")
     if _liveness_engine is None:
+        print("  [AI ENGINE] Initializing Anti-Spoofing & Liveness Engine...")
+        from anti_spoofing_liveness_engine import AntiSpoofingLivenessEngine
         _liveness_engine = AntiSpoofingLivenessEngine()
     return _crypto_verifier, _ocr_engine, _restoration_engine, _face_matcher, _liveness_engine
 
