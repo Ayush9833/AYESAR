@@ -132,27 +132,17 @@ class CardOcrCrossCheckEngine:
             "printed_address": None
         }
 
-        # 1. Look for ID numbers (Aadhaar 12-digit, PAN, Passport, Nepali Citizenship)
+        # 1. Look for ID numbers (Aadhaar 12-digit, Masked Aadhaar, PAN, Passport, Nepali Citizenship)
         uid_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', full_text)
         pan_match = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', full_text)
         passport_match = re.search(r'\b([A-Z][0-9]{7,8})\b', full_text)
         compact_uid = re.search(r'\b\d{12}\b', full_text)
+        masked_match = re.search(r'\b([xX]{4}[\s\-]?[xX]{4}[\s\-]?\d{4}|[xX]{8}\d{4})\b', full_text)
         nepal_id = re.search(r'\b\d{2,4}[-\s\/]\d{2,5}[-\s\/]\d{2,6}\b', full_text)
-
-        if uid_match:
-            fields["printed_uid"] = uid_match.group(1).replace(" ", "")
-        elif compact_uid:
-            fields["printed_uid"] = compact_uid.group(0)
-        elif pan_match:
-            fields["printed_uid"] = pan_match.group(1)
-        elif passport_match:
-            fields["printed_uid"] = passport_match.group(1)
-        elif nepal_id:
-            fields["printed_uid"] = nepal_id.group(0)
 
         # 2. Look for DOB pattern: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD
         dob_match = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.](0[1-9]|1[0-2])[\/\-\.](19\d\d|20\d\d)\b', full_text)
-        iso_dob = re.search(r'\b(19\d\d|20\d\d)[\/\-\.](0[1-9]|1[0-2])[\/\-\.](0[1-9]|[12]\d|3[01])\b', full_text)
+        iso_dob = re.search(r'\b(19\d\d|20\d\d)[-\/\.](0[1-9]|1[0-2])[-\/\.](0[1-9]|[12]\d|3[01])\b', full_text)
         if dob_match:
             fields["printed_dob"] = dob_match.group(0).replace(".", "/")
         elif iso_dob:
@@ -161,6 +151,21 @@ class CardOcrCrossCheckEngine:
             yob_match = re.search(r'(?:Year of Birth|YOB|DOB|जन्म)[\s\:\-]+(\d{4})', full_text, re.IGNORECASE)
             if yob_match:
                 fields["printed_dob"] = f"01/01/{yob_match.group(1)}"
+
+        if uid_match:
+            fields["printed_uid"] = uid_match.group(1).replace(" ", "")
+        elif compact_uid:
+            fields["printed_uid"] = compact_uid.group(0)
+        elif masked_match:
+            fields["printed_uid"] = f"XXXX XXXX {masked_match.group(0)[-4:]}"
+        elif pan_match:
+            fields["printed_uid"] = pan_match.group(1)
+        elif passport_match:
+            fields["printed_uid"] = passport_match.group(1)
+        elif nepal_id:
+            # ensure nepal_id is not just the ISO DOB
+            if not (fields["printed_dob"] and nepal_id.group(0) in fields["printed_dob"]):
+                fields["printed_uid"] = nepal_id.group(0)
 
         # 3. Look for Gender (MALE / FEMALE / TRANSGENDER)
         g_match = re.search(r'\b(MALE|FEMALE|TRANSGENDER|पुरुष|महिला)\b', full_text, re.IGNORECASE)
@@ -177,12 +182,13 @@ class CardOcrCrossCheckEngine:
                     fields["printed_name"] = candidate
                     break
 
-        # If still no name, check lines above DOB
+        # Check lines above DOB (including ISO DOB e.g. 2007-07-02)
         if not fields["printed_name"]:
             dob_idx = -1
+            target_dob = fields.get("printed_dob")
             for i, line in enumerate(lines):
                 clean = line.strip()
-                if re.search(r'(?:DOB|Date of Birth|जन्म|Year of Birth)', clean, re.IGNORECASE):
+                if (target_dob and target_dob in clean) or re.search(r'(?:DOB|Date of Birth|जन्म|Year of Birth)', clean, re.IGNORECASE):
                     dob_idx = i
                     break
 
@@ -191,7 +197,7 @@ class CardOcrCrossCheckEngine:
                 for j in range(dob_idx - 1, -1, -1):
                     cand = lines[j].strip()
                     letters_only = re.sub(r'[^A-Za-z\s]', '', cand).strip()
-                    if len(letters_only) >= 3 and not re.search(r'(Government|India|Unique|Identification|Authority|भारत|सरकार|Enrolment|Department|Republic)', letters_only, re.IGNORECASE):
+                    if len(letters_only) >= 3 and not re.search(r'(Government|India|GoverSMANTOF|Unique|Identification|Authority|भारत|सरकार|Enrolment|Department|Republic|Aadhaar)', letters_only, re.IGNORECASE):
                         fields["printed_name"] = cand
                         break
 
@@ -207,13 +213,21 @@ class CardOcrCrossCheckEngine:
                         fields["printed_name"] = letters_only.title()
                         break
 
-        # Fallback: if lines exist but nothing matched, take first non-governmental text line
-        if not fields["printed_name"] and len(lines) > 0:
-            for line in lines:
-                clean = line.strip()
-                if len(clean) > 3 and not re.search(r'(Government|India|Authority|Unique|Identification|भारत|सरकार)', clean, re.IGNORECASE):
-                    fields["printed_name"] = clean
-                    break
+        # 5. Extract Address
+        addr_idx = -1
+        for i, line in enumerate(lines):
+            if re.search(r'(?:Address|पता)[\s\:\-]+', line, re.IGNORECASE):
+                addr_idx = i
+                break
+
+        if addr_idx != -1:
+            addr_parts = []
+            for j in range(addr_idx, min(addr_idx + 4, len(lines))):
+                clean_line = re.sub(r'^(?:Address|पता)[\s\:\-]+', '', lines[j], flags=re.IGNORECASE).strip()
+                if clean_line and not any(bad in clean_line for bad in ['DigiLocker', 'Tap to', 'Did you know', 'Zoom', 'मेरा आधार']):
+                    addr_parts.append(clean_line)
+            if addr_parts:
+                fields["printed_address"] = ', '.join(addr_parts)
 
         return fields
 
