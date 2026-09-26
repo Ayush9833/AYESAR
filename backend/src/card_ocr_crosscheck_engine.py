@@ -177,27 +177,34 @@ class CardOcrCrossCheckEngine:
                     fields["printed_name"] = candidate
                     break
 
-        # If still no name, check line above DOB
+        # If still no name, check lines above DOB
         if not fields["printed_name"]:
+            dob_idx = -1
             for i, line in enumerate(lines):
                 clean = line.strip()
                 if re.search(r'(?:DOB|Date of Birth|जन्म|Year of Birth)', clean, re.IGNORECASE):
-                    if i > 0:
-                        candidate = lines[i - 1].strip()
-                        if not re.search(r'(Government|India|Unique|Identification|Authority|भारत|सरकार|Enrolment)', candidate, re.IGNORECASE):
-                            fields["printed_name"] = candidate
-                            break
+                    dob_idx = i
+                    break
+
+            if dob_idx != -1:
+                # Search backwards from DOB line for the first valid name line (at least 3 letters, no government keywords)
+                for j in range(dob_idx - 1, -1, -1):
+                    cand = lines[j].strip()
+                    letters_only = re.sub(r'[^A-Za-z\s]', '', cand).strip()
+                    if len(letters_only) >= 3 and not re.search(r'(Government|India|Unique|Identification|Authority|भारत|सरकार|Enrolment|Department|Republic)', letters_only, re.IGNORECASE):
+                        fields["printed_name"] = cand
+                        break
 
         # Fallback: scan for any clean 2-4 word alphabetic capitalized name
         if not fields["printed_name"]:
             ignore_words = {'GOVERNMENT', 'INDIA', 'UNIQUE', 'IDENTIFICATION', 'AUTHORITY', 'ENROLMENT', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'ADDRESS', 'DEPARTMENT', 'REPUBLIC', 'ELECTION', 'COMMISSION', 'PASSPORT', 'SIGNATURE', 'CARD', 'NATIONAL', 'CITIZENSHIP', 'BHUTAN', 'NEPAL'}
             for line in lines:
                 clean = line.strip()
-                words = clean.split()
-                if 2 <= len(words) <= 4 and all(w.isalpha() and len(w) > 1 for w in words):
+                letters_only = re.sub(r'[^A-Za-z\s]', '', clean).strip()
+                if 2 <= len(letters_only.split()) <= 4 and len(letters_only) >= 4:
                     upper_clean = clean.upper()
                     if not any(bad in upper_clean for bad in ignore_words):
-                        fields["printed_name"] = clean.title()
+                        fields["printed_name"] = letters_only.title()
                         break
 
         # Fallback: if lines exist but nothing matched, take first non-governmental text line
