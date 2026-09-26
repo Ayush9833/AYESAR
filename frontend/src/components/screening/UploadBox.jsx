@@ -32,6 +32,61 @@ export default function UploadBox({ onStartScreening, isLoading }) {
   const docInputRef = useRef(null);
   const selfieInputRef = useRef(null);
 
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const [cameraError, setCameraError] = useState(null);
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+
+  const startCamera = async () => {
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'user' }
+      });
+      streamRef.current = stream;
+      setIsCameraActive(true);
+      setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.play().catch(e => console.error('Play error:', e));
+        }
+      }, 100);
+    } catch (err) {
+      console.error('Camera access error:', err);
+      setCameraError('Unable to access webcam. Please grant camera permission or attach an image file.');
+    }
+  };
+
+  const capturePhoto = () => {
+    if (!videoRef.current) return;
+    const video = videoRef.current;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    const ctx = canvas.getContext('2d');
+    // Mirror image for natural user selfie perspective
+    ctx.translate(canvas.width, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    canvas.toBlob((blob) => {
+      if (blob) {
+        const file = new File([blob], 'live_webcam_face.jpg', { type: 'image/jpeg' });
+        setSelfieFile(file);
+        setSelfiePreview(canvas.toDataURL('image/jpeg'));
+        stopCamera();
+      }
+    }, 'image/jpeg', 0.95);
+  };
+
+  const stopCamera = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+    setIsCameraActive(false);
+  };
+
   const handleDocChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -362,60 +417,131 @@ export default function UploadBox({ onStartScreening, isLoading }) {
           )}
         </div>
 
-        {/* Optional Live Selfie / Biometric Capture */}
+        {/* Live Traveler Biometric Webcam / Selfie Capture */}
         <div className="pt-4 border-t border-slate-100">
           <div className="flex items-center justify-between mb-2">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-700 flex items-center gap-1.5">
               <Camera size={14} className="text-cyan-600" />
-              Optional Live Selfie (For 1:1 Face Verification)
+              Live Traveler Biometric Capture (Webcam 1:1 Match)
             </label>
-            <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">
-              Biometric Anti-Spoof
+            <span className="text-[10px] text-cyan-700 bg-cyan-50 border border-cyan-200 px-2 py-0.5 rounded uppercase tracking-wider font-bold">
+              ArcFace 512D + Anti-Spoof
             </span>
           </div>
 
-          {!selfieFile ? (
-            <div 
-              onClick={() => selfieInputRef.current?.click()}
-              className="p-4 rounded-xl border border-dashed border-slate-300 hover:border-cyan-500 hover:bg-cyan-50/30 text-center cursor-pointer transition-all"
-            >
-              <input
-                ref={selfieInputRef}
-                type="file"
-                accept="image/*"
-                onChange={handleSelfieChange}
-                className="hidden"
-              />
-              <p className="text-xs font-semibold text-slate-600">
-                Click to attach live applicant selfie for facial match comparison
-              </p>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                (Optional — demo will synthesize comparison if omitted)
-              </p>
+          {isCameraActive ? (
+            <div className="relative rounded-2xl overflow-hidden bg-slate-950 border-2 border-cyan-500 shadow-xl flex flex-col items-center p-3">
+              <div className="relative w-full max-w-sm aspect-[4/3] rounded-xl overflow-hidden bg-black flex items-center justify-center">
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform -scale-x-100"
+                />
+                {/* Face positioning oval guide */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div className="w-40 h-52 rounded-[50%] border-2 border-dashed border-cyan-400/80 shadow-[0_0_20px_rgba(6,182,212,0.3)]"></div>
+                </div>
+                <div className="absolute top-2 left-2 bg-slate-900/80 text-cyan-300 text-[10px] font-mono px-2 py-0.5 rounded-full flex items-center gap-1.5 backdrop-blur-sm">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span>
+                  <span>LIVE CAMERA STREAM ACTIVE</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 mt-3 w-full max-w-sm justify-center">
+                <button
+                  type="button"
+                  onClick={capturePhoto}
+                  className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 transition-all cursor-pointer active:scale-95"
+                >
+                  <Camera size={16} />
+                  <span>Capture Live Photo</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={stopCamera}
+                  className="py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : !selfieFile ? (
+            <div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={startCamera}
+                  className="p-4 rounded-xl border border-cyan-300 bg-cyan-50/60 hover:bg-cyan-50 hover:border-cyan-500 flex flex-col items-center text-center cursor-pointer transition-all group shadow-sm"
+                >
+                  <div className="w-10 h-10 rounded-full bg-cyan-500/10 text-cyan-600 flex items-center justify-center mb-1.5 group-hover:scale-110 transition-transform">
+                    <Camera size={20} />
+                  </div>
+                  <span className="text-xs font-bold text-brand-900">
+                    Open Live Webcam
+                  </span>
+                  <span className="text-[10px] text-slate-500 mt-0.5">
+                    Click real-time photo with laptop/phone camera
+                  </span>
+                </button>
+
+                <div
+                  onClick={() => selfieInputRef.current?.click()}
+                  className="p-4 rounded-xl border border-dashed border-slate-300 hover:border-slate-400 hover:bg-slate-50 flex flex-col items-center text-center cursor-pointer transition-all group"
+                >
+                  <input
+                    ref={selfieInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSelfieChange}
+                    className="hidden"
+                  />
+                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-600 flex items-center justify-center mb-1.5 group-hover:scale-110 transition-transform">
+                    <UploadCloud size={20} />
+                  </div>
+                  <span className="text-xs font-bold text-slate-700">
+                    Upload Selfie File
+                  </span>
+                  <span className="text-[10px] text-slate-400 mt-0.5">
+                    Attach JPG/PNG photo from disk
+                  </span>
+                </div>
+              </div>
+              {cameraError && (
+                <p className="text-[11px] text-rose-600 mt-2 font-semibold flex items-center gap-1">
+                  <AlertCircle size={13} />
+                  {cameraError}
+                </p>
+              )}
             </div>
           ) : (
-            <div className="p-3 rounded-xl border border-slate-200 bg-slate-50 flex items-center justify-between">
+            <div className="p-3.5 rounded-xl border border-emerald-300 bg-emerald-50/70 flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {selfiePreview && (
                   <img
                     src={selfiePreview}
                     alt="Selfie preview"
-                    className="w-10 h-10 object-cover rounded-full border border-slate-300"
+                    className="w-12 h-12 object-cover rounded-full border-2 border-emerald-500 shadow-sm"
                   />
                 )}
                 <div>
-                  <p className="text-xs font-bold text-slate-800">{selfieFile.name}</p>
-                  <p className="text-[10px] text-slate-500 font-mono">
-                    {(selfieFile.size / 1024).toFixed(1)} KB
+                  <div className="flex items-center gap-1.5">
+                    <CheckCircle2 size={14} className="text-emerald-600" />
+                    <p className="text-xs font-extrabold text-emerald-950">Live Photo Ready for ArcFace Matching</p>
+                  </div>
+                  <p className="text-[10px] text-emerald-800 font-mono mt-0.5">
+                    {selfieFile.name} • {(selfieFile.size / 1024).toFixed(1)} KB
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={clearSelfie}
-                className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
+                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                title="Remove photo"
               >
-                <X size={16} />
+                <X size={18} />
               </button>
             </div>
           )}
