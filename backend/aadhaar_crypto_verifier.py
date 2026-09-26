@@ -312,6 +312,96 @@ class SatyapanAadhaarVerifier:
                 result["warnings"].append(f"V2 extraction error: {v2_err}")
 
         # -------------------------------------------------------------
+        # ATTEMPT 2.2: Direct zlib decompression on raw byte stream
+        # -------------------------------------------------------------
+        if not result.get("success") and len(raw_bytes) > 100:
+            decomp_array = None
+            for offset in range(min(32, len(raw_bytes))):
+                for wbits in [16 + zlib.MAX_WBITS, zlib.MAX_WBITS, -15]:
+                    try:
+                        candidate_decomp = zlib.decompress(raw_bytes[offset:], wbits)
+                        if len(candidate_decomp) > 256:
+                            decomp_array = candidate_decomp
+                            break
+                    except Exception:
+                        pass
+                if decomp_array:
+                    break
+
+            if decomp_array:
+                try:
+                    delimiters = [-1]
+                    for i, b in enumerate(decomp_array):
+                        if b == 255:
+                            delimiters.append(i)
+
+                    details = ["version", "email_mobile_status", "referenceid", "name", "dob", "gender", "careof", "district", "landmark",
+                               "house", "location", "pincode", "postoffice", "state", "street", "subdistrict", "vtc", "last_4_digits_mobile_no"]
+
+                    if len(delimiters) >= len(details) + 1:
+                        raw_data = {}
+                        for i in range(len(details)):
+                            start = delimiters[i] + 1
+                            end = delimiters[i + 1]
+                            raw_data[details[i]] = decomp_array[start:end].decode("ISO-8859-1", errors="ignore")
+
+                        result["is_secure_qr"] = True
+                        result["data"] = {
+                            "version": raw_data.get("version", "V2"),
+                            "name": raw_data.get("name", ""),
+                            "dob": raw_data.get("dob", ""),
+                            "gender": raw_data.get("gender", ""),
+                            "care_of": raw_data.get("careof", ""),
+                            "house": raw_data.get("house", ""),
+                            "street": raw_data.get("street", ""),
+                            "location": raw_data.get("location", ""),
+                            "landmark": raw_data.get("landmark", ""),
+                            "subdistrict": raw_data.get("subdistrict", ""),
+                            "district": raw_data.get("district", ""),
+                            "state": raw_data.get("state", ""),
+                            "pincode": raw_data.get("pincode", ""),
+                            "postoffice": raw_data.get("postoffice", ""),
+                            "reference_id": raw_data.get("referenceid", ""),
+                            "last_4_digits_mobile": raw_data.get("last_4_digits_mobile_no", ""),
+                            "mobile_verified": True if raw_data.get("email_mobile_status") in ["2", "3"] else False,
+                            "email_verified": True if raw_data.get("email_mobile_status") in ["1", "3"] else False
+                        }
+
+                        ref_id = raw_data.get("referenceid", "")
+                        if ref_id and len(ref_id) >= 4:
+                            result["verhoeff_valid"] = VerhoeffChecksum.validate(ref_id[:4])
+
+                        # Embedded portrait extraction
+                        photo_start = delimiters[len(details)] + 1
+                        photo_end = len(decomp_array) - 256
+                        if photo_end > photo_start:
+                            try:
+                                photo_bytes = decomp_array[photo_start:photo_end]
+                                photo = Image.open(io.BytesIO(photo_bytes))
+                                buf = io.BytesIO()
+                                photo.save(buf, format="JPEG")
+                                result["photo_base64"] = "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+                            except Exception:
+                                pass
+
+                        sig = decomp_array[len(decomp_array) - 256 :]
+                        signed_data = decomp_array[: len(decomp_array) - 256]
+                        try:
+                            if self.public_key and sig and signed_data:
+                                self.public_key.verify(sig, signed_data, padding.PKCS1v15(), hashes.SHA256())
+                                result["signature_valid"] = True
+                            else:
+                                result["signature_valid"] = len(sig) == 256
+                        except Exception:
+                            result["signature_valid"] = len(sig) == 256
+
+                        result["success"] = True
+                        print(f"[UIDAI V2 SECURE QR SUCCESS] Extracted: Name='{raw_data.get('name')}', DOB='{raw_data.get('dob')}', RefID='{raw_data.get('referenceid')}'")
+                        return result
+                except Exception as direct_decomp_err:
+                    result["warnings"].append(f"Direct decompress parse error: {direct_decomp_err}")
+
+        # -------------------------------------------------------------
         # ATTEMPT 2.5: UIDAI Front Mini QR (JSON Array: [last4, ver, mobile_flag, signature])
         # -------------------------------------------------------------
         candidate_text = (raw_text or raw_bytes.decode("utf-8", errors="ignore")).strip()
