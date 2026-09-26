@@ -95,11 +95,14 @@ class SatyapanAadhaarVerifier:
         except Exception:
             self.public_key = None
 
-    def scan_qr_from_image(self, image_input: Any) -> Optional[str]:
+    def scan_qr_from_image(self, image_input: Any) -> Optional[Dict[str, Any]]:
         """
-        Scans and extracts raw QR data from an image path, PIL Image, or bytes.
-        Uses zxing-cpp for high-density multi-angle QR detection.
+        Scans and extracts raw QR data from an image path, PIL Image, bytes, or Base64.
+        Uses zxing-cpp + OpenCV for multi-angle, multi-scale, and pure barcode detection.
         """
+        import cv2
+
+        img_bgr = None
         if isinstance(image_input, str):
             if image_input.startswith("data:image") or len(image_input) > 200:
                 try:
@@ -107,44 +110,60 @@ class SatyapanAadhaarVerifier:
                         encoded = image_input.split(",", 1)[1]
                     else:
                         encoded = image_input
-                    img_bytes = base64.b64decode(encoded)
-                    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-                except Exception:
-                    return None
+                    raw_bytes = base64.b64decode(encoded.strip())
+                    nparr = np.frombuffer(raw_bytes, np.uint8)
+                    img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                except Exception as b64_err:
+                    print(f"[QR] Base64 decode error: {b64_err}")
             elif os.path.exists(image_input):
-                img = Image.open(image_input).convert("RGB")
-            else:
-                return None
+                img_bgr = cv2.imread(image_input)
         elif isinstance(image_input, bytes):
-            img = Image.open(io.BytesIO(image_input)).convert("RGB")
-        elif isinstance(image_input, Image.Image):
-            img = image_input.convert("RGB")
+            nparr = np.frombuffer(image_input, np.uint8)
+            img_bgr = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
         elif isinstance(image_input, np.ndarray):
-            img = Image.fromarray(image_input)
-        else:
+            img_bgr = image_input
+        elif isinstance(image_input, Image.Image):
+            img_bgr = cv2.cvtColor(np.array(image_input), cv2.COLOR_RGB2BGR)
+
+        if img_bgr is None:
+            print("[QR] Failed to decode image buffer")
             return None
 
-        # Execute C++ zxing scan
-        barcodes = zxingcpp.read_barcodes(img)
+        # Pass 1: Standard multi-angle scan
+        barcodes = zxingcpp.read_barcodes(img_bgr, try_rotate=True, try_downscale=True, try_invert=True)
+
+        # Pass 2: Pure barcode scan (for cropped QR images without margins)
         if not barcodes:
-            # Multi-contrast fallback for blurry/glare webcams
+            barcodes = zxingcpp.read_barcodes(img_bgr, is_pure=True, try_rotate=True, try_invert=True)
+
+        # Pass 3: Grayscale + Otsu thresholding
+        if not barcodes:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
+            barcodes = zxingcpp.read_barcodes(thresh, try_rotate=True, try_invert=True)
+            if not barcodes:
+                barcodes = zxingcpp.read_barcodes(thresh, is_pure=True, try_rotate=True)
+
+        # Pass 4: OpenCV QRCodeDetector fallback
+        if not barcodes:
             try:
-                import cv2
-                np_img = np.array(img)
-                gray = cv2.cvtColor(np_img, cv2.COLOR_RGB2GRAY)
-                _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-                barcodes = zxingcpp.read_barcodes(Image.fromarray(thresh))
+                detector = cv2.QRCodeDetector()
+                val, pts, _ = detector.detectAndDecode(img_bgr)
+                if val:
+                    print(f"[QR] OpenCV detector found barcode: {val[:50]}...")
+                    return {"text": val, "bytes": val.encode('utf-8', errors='ignore')}
             except Exception:
                 pass
 
         if not barcodes:
+            print("[QR] No QR barcode found in image after 4 scanning passes.")
             return None
 
-        # Prefer QR Code format
         for b in barcodes:
             if "QR" in str(b.format):
+                print(f"[QR] Found QR barcode! Text length: {len(b.text) if b.text else 0}, Bytes: {len(b.bytes) if b.bytes else 0}")
                 return {"text": b.text, "bytes": b.bytes}
-        
+
         return {"text": barcodes[0].text, "bytes": barcodes[0].bytes}
 
     def decode_and_verify(self, image_input: Any) -> Dict[str, Any]:

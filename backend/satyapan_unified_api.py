@@ -161,11 +161,11 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
     if qr_img:
         try:
             qr_res = crypto.decode_and_verify(qr_img)
-            if qr_res and qr_res.get("success"):
-                step_results["qr_cryptography"] = qr_res
-            else:
-                qr_res = None
-        except Exception:
+            step_results["qr_cryptography"] = qr_res
+            data_found = (qr_res and (qr_res.get("decoded_data") or qr_res.get("data"))) or {}
+            print(f"[API] QR check complete. Name: '{data_found.get('name')}', Signature valid: {qr_res.get('signature_valid')}")
+        except Exception as qr_err:
+            print(f"[API] QR processing error: {qr_err}")
             qr_res = None
 
     # 3. Printed Card OCR Analysis
