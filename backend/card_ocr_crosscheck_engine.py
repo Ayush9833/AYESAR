@@ -54,7 +54,17 @@ class CardOcrCrossCheckEngine:
         Extracts all printed text lines with confidence scores and bounding boxes using EasyOCR.
         """
         if isinstance(image_input, str):
-            image_path = image_input
+            if image_input.startswith("data:image") or len(image_input) > 200:
+                try:
+                    if "," in image_input:
+                        encoded = image_input.split(",", 1)[1]
+                    else:
+                        encoded = image_input
+                    image_path = base64.b64decode(encoded)
+                except Exception:
+                    image_path = image_input
+            else:
+                image_path = image_input
         elif isinstance(image_input, Image.Image):
             buf = io.BytesIO()
             image_input.save(buf, format='JPEG')
@@ -135,6 +145,21 @@ class CardOcrCrossCheckEngine:
                         break
 
         return fields
+
+    def cross_check(self, card_image_or_data: Any, qr_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Flexible cross-check accepting either an image input (filepath, base64 Data URL, PIL, bytes)
+        or an already extracted OCR fields dictionary.
+        """
+        if isinstance(card_image_or_data, dict):
+            if "parsed_fields" in card_image_or_data:
+                printed_data = card_image_or_data["parsed_fields"]
+            else:
+                printed_data = card_image_or_data
+        else:
+            extracted = self.extract_printed_text(card_image_or_data)
+            printed_data = extracted.get("parsed_fields", {})
+        return self.cross_check_printed_vs_qr(printed_data, qr_data)
 
     def cross_check_printed_vs_qr(self, printed_data: Dict[str, Any], qr_data: Dict[str, Any]) -> Dict[str, Any]:
         """

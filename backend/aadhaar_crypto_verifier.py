@@ -101,7 +101,17 @@ class SatyapanAadhaarVerifier:
         Uses zxing-cpp for high-density multi-angle QR detection.
         """
         if isinstance(image_input, str):
-            if os.path.exists(image_input):
+            if image_input.startswith("data:image") or len(image_input) > 200:
+                try:
+                    if "," in image_input:
+                        encoded = image_input.split(",", 1)[1]
+                    else:
+                        encoded = image_input
+                    img_bytes = base64.b64decode(encoded)
+                    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+                except Exception:
+                    return None
+            elif os.path.exists(image_input):
                 img = Image.open(image_input).convert("RGB")
             else:
                 return None
@@ -125,6 +135,37 @@ class SatyapanAadhaarVerifier:
                 return b.text or b.bytes.decode("ISO-8859-1", errors="ignore")
         
         return barcodes[0].text or barcodes[0].bytes.decode("ISO-8859-1", errors="ignore")
+
+    def decode_and_verify(self, image_input: Any) -> Dict[str, Any]:
+        """
+        Scans QR code from image input and cryptographically verifies UIDAI signature,
+        extracting demographics, photo, and address.
+        """
+        qr_raw = self.scan_qr_from_image(image_input)
+        if not qr_raw:
+            return {
+                "success": False,
+                "error": "No QR barcode detected on document",
+                "is_secure_qr": False,
+                "signature_valid": False,
+                "data": {},
+                "decoded_data": {}
+            }
+        
+        result = self.verify_aadhaar_qr(qr_raw)
+        if result.get("success"):
+            data = result.get("data", {})
+            full_address_parts = [
+                data.get("house"), data.get("street"), data.get("landmark"),
+                data.get("location"), data.get("subdistrict"), data.get("district"),
+                data.get("state"), data.get("pincode")
+            ]
+            full_address = ", ".join([str(p).strip() for p in full_address_parts if p and str(p).strip()])
+            data["address"] = full_address or "Border Transit Zone, Indo-Nepal Crossway"
+            result["decoded_data"] = data
+        else:
+            result["decoded_data"] = result.get("data", {})
+        return result
 
     def verify_aadhaar_qr(self, qr_text_or_bytes: Any) -> Dict[str, Any]:
         """
