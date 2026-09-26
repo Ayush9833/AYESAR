@@ -390,12 +390,12 @@ class SatyapanAadhaarVerifier:
                             end = delimiters[i + 1]
                             raw_data[details[i]] = decomp_array[start:end].decode("ISO-8859-1", errors="ignore")
 
-                        result["is_secure_qr"] = True
+                        ref_clean = raw_data.get("referenceid", "")[:4] if len(raw_data.get("referenceid", "")) >= 4 else raw_data.get("referenceid", "")
                         result["data"] = {
-                            "version": raw_data.get("version", "V2"),
+                            "version": raw_data.get("version", "V5"),
                             "name": raw_data.get("name", ""),
                             "dob": raw_data.get("dob", ""),
-                            "gender": raw_data.get("gender", ""),
+                            "gender": "Male" if raw_data.get("gender") == "M" else ("Female" if raw_data.get("gender") == "F" else raw_data.get("gender", "")),
                             "care_of": raw_data.get("careof", ""),
                             "house": raw_data.get("house", ""),
                             "street": raw_data.get("street", ""),
@@ -406,7 +406,8 @@ class SatyapanAadhaarVerifier:
                             "state": raw_data.get("state", ""),
                             "pincode": raw_data.get("pincode", ""),
                             "postoffice": raw_data.get("postoffice", ""),
-                            "reference_id": raw_data.get("referenceid", ""),
+                            "aadhaar_number": f"XXXX XXXX {ref_clean}" if ref_clean else "UIDAI-VERIFIED",
+                            "reference_id": ref_clean,
                             "last_4_digits_mobile": raw_data.get("last_4_digits_mobile_no", ""),
                             "mobile_verified": True if raw_data.get("email_mobile_status") in ["2", "3"] else False,
                             "email_verified": True if raw_data.get("email_mobile_status") in ["1", "3"] else False
