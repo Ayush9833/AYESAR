@@ -137,7 +137,16 @@ class SatyapanAadhaarVerifier:
         if not barcodes:
             barcodes = zxingcpp.read_barcodes(img_bgr, is_pure=True, try_rotate=True, try_invert=True)
 
-        # Pass 3: Grayscale + Otsu thresholding
+        # Pass 3: Grayscale + CLAHE (fixes glare, reflections, and shadow unevenness)
+        if not barcodes:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            barcodes = zxingcpp.read_barcodes(enhanced, try_rotate=True, try_downscale=True, try_invert=True)
+            if not barcodes:
+                barcodes = zxingcpp.read_barcodes(enhanced, is_pure=True, try_rotate=True)
+
+        # Pass 4: Grayscale + Otsu thresholding
         if not barcodes:
             gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
@@ -145,7 +154,28 @@ class SatyapanAadhaarVerifier:
             if not barcodes:
                 barcodes = zxingcpp.read_barcodes(thresh, is_pure=True, try_rotate=True)
 
-        # Pass 4: OpenCV QRCodeDetector fallback
+        # Pass 5: Adaptive Gaussian Thresholding (recovers blurred/faint matrix modules)
+        if not barcodes:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            for block_size in [21, 31, 51]:
+                adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5)
+                barcodes = zxingcpp.read_barcodes(adaptive, try_rotate=True, try_downscale=True)
+                if barcodes:
+                    break
+
+        # Pass 6: Rescaling / Multi-scale Pyramid (if image is low-res or giant phone capture)
+        if not barcodes:
+            h, w = img_bgr.shape[:2]
+            for target_w in [800, 1200, 1600]:
+                if abs(w - target_w) > 150:
+                    scale = target_w / w
+                    target_h = int(h * scale)
+                    resized = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
+                    barcodes = zxingcpp.read_barcodes(resized, try_rotate=True, try_downscale=True)
+                    if barcodes:
+                        break
+
+        # Pass 7: OpenCV QRCodeDetector fallback
         if not barcodes:
             try:
                 detector = cv2.QRCodeDetector()
@@ -157,7 +187,7 @@ class SatyapanAadhaarVerifier:
                 pass
 
         if not barcodes:
-            print("[QR] No QR barcode found in image after 4 scanning passes.")
+            print("[QR] No QR barcode found in image after 7 scanning passes.")
             return None
 
         for b in barcodes:

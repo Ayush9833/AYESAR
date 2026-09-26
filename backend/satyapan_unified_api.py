@@ -160,6 +160,12 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
     qr_res = None
     if qr_img:
         try:
+            if isinstance(qr_img, str) and qr_img.startswith("data:image"):
+                import base64
+                encoded = qr_img.split(",", 1)[1] if "," in qr_img else qr_img
+                with open("last_received_upload.jpg", "wb") as f_dbg:
+                    f_dbg.write(base64.b64decode(encoded.strip()))
+                print(f"[API INGEST] Saved received QR image to last_received_upload.jpg")
             qr_res = crypto.decode_and_verify(qr_img)
             step_results["qr_cryptography"] = qr_res
             data_found = (qr_res and (qr_res.get("decoded_data") or qr_res.get("data"))) or {}
