@@ -146,14 +146,23 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
 
     # Default fallback images if omitted for demonstration
     has_custom_live_cam = bool(payload.live_webcam_frame)
-    live_cam = payload.live_webcam_frame or "live_webcam_frame.jpg"
+    live_cam = payload.live_webcam_frame
     card_img = payload.card_front_image or payload.qr_code_image
     qr_img = payload.qr_code_image or payload.card_front_image
 
     step_results = {}
 
     # 1. Anti-Spoofing & Liveness Analysis
-    liveness_res = liveness.analyze_liveness(live_cam)
+    if has_custom_live_cam:
+        liveness_res = liveness.analyze_liveness(live_cam)
+    else:
+        liveness_res = {
+            "success": True,
+            "is_live": None,
+            "liveness_score": None,
+            "verdict": "SKIPPED_NO_LIVE_CAPTURE",
+            "summary": "Live traveler webcam was not captured. Presentation attack & liveness check skipped."
+        }
     step_results["liveness"] = liveness_res
 
     # 2. QR Cryptography (probe QR code from qr_img or card_img)
@@ -208,34 +217,58 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
         step_results["face_restoration"] = restored_res
 
     # 5. 1:1 Live Face Matcher (ArcFace)
-    face_match_res = matcher.verify_1to1(
-        live_person_input=live_cam,
-        qr_photo_input=qr_photo_for_matching
-    )
+    if has_custom_live_cam and qr_photo_for_matching:
+        face_match_res = matcher.verify_1to1(
+            live_person_input=live_cam,
+            qr_photo_input=qr_photo_for_matching
+        )
+    else:
+        face_match_res = {
+            "success": True,
+            "verified": None,
+            "similarity_percentage": None,
+            "verdict": "SKIPPED_NO_LIVE_CAPTURE",
+            "summary": "Live traveler webcam was not captured. 1:1 biometric facial matching skipped."
+        }
     step_results["face_match"] = face_match_res
 
     # Master Gate Decision Matrix
-    is_live = liveness_res.get("is_live", False) if has_custom_live_cam else True
-    is_same_person = face_match_res.get("verified", False) if has_custom_live_cam else True
-    sim_percentage = face_match_res.get("similarity_percentage", 95.0) if has_custom_live_cam else 95.0
     is_tampered = bool(ocr_cross_res and (ocr_cross_res.get("tampering_detected") or ocr_cross_res.get("is_photoshop_or_tamper_detected")))
 
-    if not is_live:
-        gate_decision = "REJECT_SPOOF_ATTACK"
-        action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-        status_code = "SECURITY_ALARM"
-    elif is_tampered:
-        gate_decision = "REJECT_TAMPERED_CARD"
-        action = "HALT: Physical card text does not match cryptographic QR data. Confiscate forged credential."
-        status_code = "FORGERY_DETECTED"
-    elif not is_same_person or sim_percentage < 70.0:
-        gate_decision = "BORDER_INTERROGATION"
-        action = "FLAG: Biometric mismatch between live traveler and document bearer. Escort to secondary screening."
-        status_code = "IMPERSONATION_ALERT"
+    if has_custom_live_cam:
+        is_live = liveness_res.get("is_live", False)
+        is_same_person = face_match_res.get("verified", False)
+        sim_percentage = face_match_res.get("similarity_percentage", 0.0)
+
+        if not is_live:
+            gate_decision = "REJECT_SPOOF_ATTACK"
+            action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
+            status_code = "SECURITY_ALARM"
+        elif is_tampered:
+            gate_decision = "REJECT_TAMPERED_CARD"
+            action = "HALT: Physical card text does not match cryptographic QR data. Confiscate forged credential."
+            status_code = "FORGERY_DETECTED"
+        elif not is_same_person or (sim_percentage is not None and sim_percentage < 70.0):
+            gate_decision = "BORDER_INTERROGATION"
+            action = "FLAG: Biometric mismatch between live traveler and document bearer. Escort to secondary screening."
+            status_code = "IMPERSONATION_ALERT"
+        else:
+            gate_decision = "ALLOW_PASSAGE"
+            action = "VERIFIED: Authentic citizen with verified credentials and confirmed clearance."
+            status_code = "PASS"
     else:
-        gate_decision = "ALLOW_PASSAGE"
-        action = "VERIFIED: Authentic citizen with verified credentials and confirmed clearance."
-        status_code = "PASS"
+        is_live = None
+        is_same_person = None
+        sim_percentage = None
+
+        if is_tampered:
+            gate_decision = "REJECT_TAMPERED_CARD"
+            action = "HALT: Physical card text does not match cryptographic QR data. Confiscate forged credential."
+            status_code = "FORGERY_DETECTED"
+        else:
+            gate_decision = "ALLOW_PASSAGE"
+            action = "VERIFIED: Authentic citizen credential validated (Biometric live face verification was skipped)."
+            status_code = "PASS"
 
     # Extract real identity attributes from QR payload or Card OCR
     qr_payload = (qr_res and (qr_res.get("decoded_data") or qr_res.get("data"))) or {}
@@ -341,11 +374,12 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
         "action_required": action,
         "extracted_identity": extracted_identity,
         "biometrics": {
-            "is_same_person": is_same_person,
-            "similarity_score": f"{sim_percentage}%",
-            "is_live": is_live,
-            "liveness_confidence": f"{liveness_res.get('liveness_score', 0)}%",
-            "attack_type": liveness_res.get("attack_type")
+            "is_same_person": is_same_person if has_custom_live_cam else None,
+            "similarity_score": f"{sim_percentage}%" if has_custom_live_cam else "N/A (No Live Camera)",
+            "is_live": is_live if has_custom_live_cam else None,
+            "liveness_confidence": f"{liveness_res.get('liveness_score', 0)}%" if has_custom_live_cam else "N/A (No Live Camera)",
+            "attack_type": liveness_res.get("attack_type") if has_custom_live_cam else None,
+            "status": "VERIFIED" if has_custom_live_cam else "SKIPPED"
         },
         "total_latency_ms": total_time_ms,
         "detailed_steps": step_results
