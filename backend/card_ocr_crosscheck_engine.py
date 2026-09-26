@@ -327,34 +327,37 @@ class CardOcrCrossCheckEngine:
         if target_last4 and printed_uid:
             clean_printed_last4 = printed_uid[-4:]
             clean_qr_last4 = target_last4
-            if is_mini_qr:
+            match = (clean_qr_last4 == clean_printed_last4)
+            
+            if match:
                 comparisons.append({
                     "field": "Aadhaar UID / Reference Check",
                     "printed_text": f"XXXX-XXXX-{clean_printed_last4}",
-                    "qr_authenticated_text": f"Token Ref: {clean_qr_last4} (UIDAI Certified)",
+                    "qr_authenticated_text": f"XXXX-XXXX-{clean_qr_last4} (UIDAI Certified)",
                     "similarity_score": 1.0,
                     "is_match": True,
                     "verdict": "VERIFIED_IDENTICAL"
                 })
             else:
-                match = clean_qr_last4 == clean_printed_last4
+                is_tampered = True
                 comparisons.append({
                     "field": "Aadhaar UID / Reference Check",
                     "printed_text": f"XXXX-XXXX-{clean_printed_last4}",
-                    "qr_authenticated_text": f"XXXX-XXXX-{clean_qr_last4}",
-                    "similarity_score": 1.0 if match else 0.0,
-                    "is_match": match,
-                    "verdict": "VERIFIED_IDENTICAL" if match else "TAMPERING_SUSPECTED"
+                    "qr_authenticated_text": f"Token/Last-4: {clean_qr_last4} (UIDAI Certified)",
+                    "similarity_score": 0.0,
+                    "is_match": False,
+                    "verdict": "TOKEN_MISMATCH_SUSPECTED"
                 })
-                if not match:
-                    is_tampered = True
-                    tamper_flags.append(f"UID Sequence Mismatch: Printed last4 ('{clean_printed_last4}') != QR ('{clean_qr_last4}')")
+                tamper_flags.append(
+                    f"UID Sequence Mismatch: Printed document ends in '{clean_printed_last4}', but cryptographic QR is certified for '{clean_qr_last4}'. Possible QR-swap forgery or Virtual ID (VID) discrepancy."
+                )
 
         overall_status = "TAMPER_DETECTED" if is_tampered else ("AUTHENTIC_MATCH" if comparisons else "INSUFFICIENT_DATA")
 
         return {
             "cross_check_status": overall_status,
             "is_photoshop_or_tamper_detected": is_tampered,
+            "tampering_detected": is_tampered,
             "tamper_flags": tamper_flags,
             "field_comparisons": comparisons,
             "summary_note": "ALERT: Physical card text does not match cryptographically signed QR data. Possible Photoshop alteration or fake PVC card." if is_tampered else "SUCCESS: Physical card surface text exactly matches cryptographically signed QR payload."

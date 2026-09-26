@@ -218,7 +218,7 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
     is_live = liveness_res.get("is_live", False) if has_custom_live_cam else True
     is_same_person = face_match_res.get("verified", False) if has_custom_live_cam else True
     sim_percentage = face_match_res.get("similarity_percentage", 95.0) if has_custom_live_cam else 95.0
-    is_tampered = ocr_cross_res.get("tampering_detected", False) if ocr_cross_res else False
+    is_tampered = bool(ocr_cross_res and (ocr_cross_res.get("tampering_detected") or ocr_cross_res.get("is_photoshop_or_tamper_detected")))
 
     if not is_live:
         gate_decision = "REJECT_SPOOF_ATTACK"
