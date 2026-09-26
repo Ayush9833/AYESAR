@@ -278,16 +278,17 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
 
     # 4. ID Number Resolution:
     real_id = (
-        qr_payload.get("aadhaar_number") or
         ocr_fields.get("printed_uid") or
+        qr_payload.get("aadhaar_number") or
         (f"XXXX XXXX {qr_payload.get('reference_id')}" if qr_payload.get("reference_id") else None) or
         "UIDAI-VERIFIED"
     )
 
     # 5. Address Resolution:
     real_address = (
-        qr_payload.get("address") or
         ocr_fields.get("printed_address") or
+        (qr_payload.get("address") if qr_payload.get("address") and "Border Transit" not in qr_payload.get("address") else None) or
+        qr_payload.get("address") or
         "Border Transit Zone, Indo-Nepal Crossway"
     )
     real_photo_b64 = (
