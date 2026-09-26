@@ -576,8 +576,9 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
         const bio = res.biometrics || {};
         const isVerified = res.gate_decision === 'ALLOW_PASSAGE';
         const isTampered = res.tamper_status === 'FORGERY DETECTED';
-        const matchPct = parseInt(bio.similarity_score) || (isVerified ? 96 : 45);
-        const livePct = parseInt(bio.liveness_confidence) || 98;
+        const hasLiveCapture = Boolean(selfieDataUrl && bio.status !== 'SKIPPED' && bio.similarity_score && !bio.similarity_score.includes('N/A'));
+        const matchPct = hasLiveCapture ? (parseFloat(bio.similarity_score) || 96) : null;
+        const livePct = hasLiveCapture ? (parseFloat(bio.liveness_confidence) || 98) : null;
 
         const realScreening = {
           id: newId,
@@ -594,7 +595,8 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
           faceMatchScore: matchPct,
           livenessScore: livePct,
           authenticityScore: isTampered ? 25 : 98,
-          livenessStatus: bio.is_live ? 'PASS' : 'FAIL',
+          livenessStatus: hasLiveCapture ? (bio.is_live ? 'PASS' : 'FAIL') : 'SKIPPED',
+          selfieUrl: selfieDataUrl || null,
           fileName: documentFile.name,
           fileSize: `${(documentFile.size / (1024 * 1024)).toFixed(2)} MB`,
           dimensions: '1920x1080',
@@ -621,13 +623,23 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
                 status: ext.is_qr_cryptographically_verified ? 'PASS' : 'INFO',
                 detail: ext.is_qr_cryptographically_verified ? 'UIDAI RSA-2048 Digital Signature verified' : 'OCR extracted directly from document surface'
               },
-              {
+              hasLiveCapture ? {
                 name: 'Anti-Spoofing & Liveness',
                 status: bio.is_live ? 'PASS' : 'FAIL',
                 detail: `Live facial confidence: ${livePct}%`
+              } : {
+                name: 'Anti-Spoofing & Liveness',
+                status: 'INFO',
+                detail: 'Live webcam capture was skipped (Optional)'
               }
             ],
-            warnings: [],
+            warnings: !hasLiveCapture ? [
+              {
+                name: 'Live Biometric Capture',
+                status: 'INFO',
+                detail: 'Traveler passed credential verification without live webcam photo'
+              }
+            ] : [],
             failedChecks: isTampered ? [{ name: 'Tampering Check', status: 'FAIL', detail: 'Physical card text does not match cryptographically signed QR data' }] : []
           },
           forensicResults: {
@@ -635,27 +647,39 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
             summary: res.action_required || 'Real-time border screening cleared by SATYAPAN Core.',
             checks: [
               { name: 'Cross-Check Integrity', status: isTampered ? 'FAIL' : 'PASS', detail: res.tamper_status || 'OK' },
-              { name: 'Biometric Face Match', status: bio.is_same_person ? 'PASS' : 'FAIL', detail: `ArcFace similarity: ${matchPct}%` }
+              {
+                name: 'Biometric Face Match',
+                status: hasLiveCapture ? (bio.is_same_person ? 'PASS' : 'FAIL') : 'INFO',
+                detail: hasLiveCapture ? `ArcFace similarity: ${matchPct}%` : 'Skipped (No live photo captured)'
+              }
             ],
             tamperedRegions: []
           },
           faceResults: {
+            hasLiveCapture: hasLiveCapture,
+            livePhotoUrl: selfieDataUrl || null,
             documentFaceDetected: true,
-            liveFaceDetected: Boolean(bio.is_live),
+            liveFaceDetected: hasLiveCapture,
             faceMatchScore: matchPct,
             livenessScore: livePct,
-            livenessStatus: bio.is_live ? 'PASS' : 'FAIL',
-            blinkDetected: true,
-            motionTextureScore: 96,
-            impersonationDetected: !bio.is_same_person,
-            status: isVerified ? 'VERIFIED' : 'SUSPICIOUS',
-            notes: res.action_required
+            livenessStatus: hasLiveCapture ? (bio.is_live ? 'PASS' : 'FAIL') : 'SKIPPED',
+            blinkDetected: hasLiveCapture ? true : null,
+            motionTextureScore: hasLiveCapture ? 96 : null,
+            impersonationDetected: hasLiveCapture ? !bio.is_same_person : false,
+            status: hasLiveCapture ? (bio.is_same_person ? 'VERIFIED' : 'SUSPICIOUS') : 'SKIPPED',
+            notes: hasLiveCapture ? res.action_required : 'Live webcam was not captured. 1:1 facial biometric matching skipped.'
           },
           riskBreakdown: [
             { factor: 'Module 1: OCR & Cryptography', weight: '25%', score: 98, contribution: 'Low Risk', status: 'PASS' },
             { factor: 'Module 2: Cross-Check Integrity', weight: '25%', score: isTampered ? 25 : 99, contribution: isTampered ? 'High Risk' : 'Low Risk', status: isTampered ? 'FAIL' : 'PASS' },
             { factor: 'Module 3: Tampering Detection', weight: '25%', score: isTampered ? 20 : 97, contribution: isTampered ? 'High Risk' : 'Low Risk', status: isTampered ? 'FAIL' : 'PASS' },
-            { factor: 'Module 4: Biometrics & Liveness', weight: '25%', score: matchPct, contribution: matchPct > 70 ? 'Low Risk' : 'High Risk', status: matchPct > 70 ? 'PASS' : 'FAIL' }
+            {
+              factor: 'Module 4: Biometrics & Liveness',
+              weight: '25%',
+              score: hasLiveCapture ? matchPct : 100,
+              contribution: hasLiveCapture ? (matchPct > 70 ? 'Low Risk' : 'High Risk') : 'Neutral (Skipped)',
+              status: hasLiveCapture ? (matchPct > 70 ? 'PASS' : 'FAIL') : 'INFO'
+            }
           ],
           reasons: [
             `Gate Decision: ${res.gate_decision}`,

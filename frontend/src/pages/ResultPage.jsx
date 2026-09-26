@@ -271,11 +271,15 @@ export default function ResultPage() {
               Face Match
             </span>
             <span className={`text-2xl font-extrabold font-mono mt-1 block ${
-              (screening.faceMatchScore || 96) >= 80 ? 'text-emerald-600' : 'text-rose-600'
+              screening.faceMatchScore == null
+                ? 'text-slate-400 text-lg'
+                : screening.faceMatchScore >= 80 ? 'text-emerald-600' : 'text-rose-600'
             }`}>
-              {screening.faceMatchScore || 96}%
+              {screening.faceMatchScore != null ? `${screening.faceMatchScore}%` : 'SKIPPED'}
             </span>
-            <p className="text-[11px] text-slate-500 font-medium mt-0.5">1:1 Biometric Match</p>
+            <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+              {screening.faceMatchScore != null ? '1:1 Biometric Match' : 'Webcam Not Captured'}
+            </p>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-card">
@@ -283,11 +287,15 @@ export default function ResultPage() {
               Liveness Score
             </span>
             <span className={`text-2xl font-extrabold font-mono mt-1 block ${
-              (screening.livenessScore || 98) >= 80 ? 'text-emerald-600' : 'text-rose-600'
+              screening.livenessScore == null
+                ? 'text-slate-400 text-lg'
+                : screening.livenessScore >= 80 ? 'text-emerald-600' : 'text-rose-600'
             }`}>
-              {screening.livenessScore || 98}%
+              {screening.livenessScore != null ? `${screening.livenessScore}%` : 'SKIPPED'}
             </span>
-            <p className="text-[11px] text-slate-500 font-medium mt-0.5">Anti-Spoof Check</p>
+            <p className="text-[11px] text-slate-500 font-medium mt-0.5">
+              {screening.livenessScore != null ? 'Anti-Spoof Check' : 'Webcam Skipped'}
+            </p>
           </div>
 
           <div className="bg-white p-4 rounded-xl border border-slate-200/80 shadow-card">
@@ -378,8 +386,10 @@ export default function ResultPage() {
       {/* Biometric Face Verification Card */}
       <FaceVerificationCard
         faceResults={screening.faceResults}
-        selfieUrl={screening.selfieUrl}
+        selfieUrl={screening.selfieUrl || screening.faceResults?.livePhotoUrl}
         documentType={screening.documentType}
+        documentPhotoUrl={screening.documentPhoto || screening.photoUrl}
+        restoredPhotoUrl={screening.restoredPhoto || screening.photoUrl}
       />
 
       {/* Multi-Signal Risk Breakdown & Decision Reasons */}

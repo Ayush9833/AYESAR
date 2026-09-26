@@ -9,13 +9,19 @@ export default function FaceVerificationCard({
   documentPhotoUrl,
   restoredPhotoUrl
 }) {
+  const hasLiveCapture = Boolean(
+    selfieUrl ||
+    faceResults?.livePhotoUrl ||
+    (faceResults?.hasLiveCapture && faceResults?.faceMatchScore != null)
+  );
+
   const {
-    faceMatchScore = 96,
-    livenessScore = 98,
-    livenessStatus = 'PASS',
-    status = 'VERIFIED',
-    blinkDetected = true,
-    motionTextureScore = 96,
+    faceMatchScore = hasLiveCapture ? 96 : null,
+    livenessScore = hasLiveCapture ? 98 : null,
+    livenessStatus = hasLiveCapture ? 'PASS' : 'SKIPPED',
+    status = hasLiveCapture ? 'VERIFIED' : 'SKIPPED',
+    blinkDetected = hasLiveCapture ? true : null,
+    motionTextureScore = hasLiveCapture ? 96 : null,
     model = 'InsightFace ArcFace 512D • ISO/IEC 30107-3',
     impersonationDetected = false,
     multipleIdentitiesFound = false,
@@ -38,16 +44,29 @@ export default function FaceVerificationCard({
             <span className="text-[10px] font-mono text-slate-400">InsightFace ArcFace 512D • ISO/IEC 30107-3</span>
           </div>
           <h4 className="text-base font-bold text-brand-900">Biometric 1:1 Face Matching & Impersonation Defense</h4>
-          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 mt-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
-            <UserCheck size={13} className="text-emerald-600 shrink-0" />
-            <span><strong>Objective:</strong> Ensure document owner matches the presented individual</span>
-          </div>
+          {hasLiveCapture ? (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 mt-1 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] font-semibold">
+              <UserCheck size={13} className="text-emerald-600 shrink-0" />
+              <span><strong>Objective:</strong> Ensure document owner matches the presented individual</span>
+            </div>
+          ) : (
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 mt-1 rounded-lg bg-slate-100 border border-slate-200 text-slate-600 text-[11px] font-medium">
+              <UserCheck size={13} className="text-slate-400 shrink-0" />
+              <span><strong>Status:</strong> Live webcam was not captured — facial verification skipped for this screening.</span>
+            </div>
+          )}
         </div>
-        <StatusBadge status={status} size="sm" />
+        {hasLiveCapture ? (
+          <StatusBadge status={status} size="sm" />
+        ) : (
+          <span className="px-2.5 py-1 rounded-md text-[10px] font-bold font-mono uppercase bg-slate-100 text-slate-500 border border-slate-200">
+            SKIPPED (NO LIVE CAPTURE)
+          </span>
+        )}
       </div>
 
       {/* Identity Impersonation or Multi-Identity Warning Banner */}
-      {(impersonationDetected || isSuspicious) && (
+      {hasLiveCapture && (impersonationDetected || isSuspicious) && (
         <div className="mb-4 p-3.5 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-3">
           <ShieldAlert size={18} className="text-rose-600 shrink-0 mt-0.5" />
           <div className="flex-1 text-xs">
@@ -75,7 +94,7 @@ export default function FaceVerificationCard({
         </div>
       )}
 
-            {/* 3-Way Biometric Face Restoration & Super-Resolution Pipeline */}
+      {/* 3-Way Biometric Face Restoration & Super-Resolution Pipeline */}
       <div className="mb-5 p-4 rounded-xl bg-slate-50 border border-slate-200/80">
         <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-200/60">
           <div className="flex items-center gap-2">
@@ -157,25 +176,27 @@ export default function FaceVerificationCard({
               {selfieUrl ? (
                 <img src={selfieUrl} alt="Live traveler capture" className="w-full h-full object-cover" />
               ) : (
-                <div className="flex flex-col items-center justify-center p-2 text-cyan-600">
-                  <div className="w-8 h-8 rounded-full bg-cyan-600/30 mb-1 flex items-center justify-center">
-                    <UserCheck size={18} className="text-cyan-700" />
+                <div className="flex flex-col items-center justify-center p-2 text-slate-400">
+                  <div className="w-8 h-8 rounded-full bg-slate-200 mb-1 flex items-center justify-center">
+                    <UserCheck size={18} className="text-slate-400" />
                   </div>
-                  <span className="text-[9px] font-mono">BOP Camera</span>
+                  <span className="text-[9px] font-mono text-slate-400">Not Captured</span>
                 </div>
               )}
               {/* Liveness badge overlay */}
               <div className={`absolute top-1 left-1 px-1.5 py-0.5 rounded text-[8px] font-bold ${
-                livenessStatus === 'PASS' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white'
+                hasLiveCapture 
+                  ? (livenessStatus === 'PASS' ? 'bg-emerald-500 text-white' : 'bg-rose-500 text-white')
+                  : 'bg-slate-500 text-white'
               }`}>
-                {livenessStatus === 'PASS' ? 'LIVE' : 'SPOOF'}
+                {hasLiveCapture ? (livenessStatus === 'PASS' ? 'LIVE' : 'SPOOF') : 'SKIPPED'}
               </div>
               <span className="absolute bottom-1 right-1 text-[8px] bg-cyan-700 text-white font-mono px-1 rounded">
-                Live 1080p
+                {hasLiveCapture ? 'Live 1080p' : 'No Stream'}
               </span>
             </div>
             <span className="text-[10px] text-slate-500 font-semibold mt-1.5">
-              ArcFace Cosine: {faceMatchScore}%
+              {hasLiveCapture && faceMatchScore != null ? `ArcFace Cosine: ${faceMatchScore}%` : 'Webcam Skipped'}
             </span>
           </div>
         </div>
@@ -186,9 +207,11 @@ export default function FaceVerificationCard({
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60">
           <span className="block text-[10px] text-slate-400 uppercase font-semibold">1:1 Face Match</span>
           <span className={`text-lg font-bold font-mono ${
-            faceMatchScore >= 80 ? 'text-emerald-600' : faceMatchScore >= 60 ? 'text-amber-600' : 'text-rose-600'
+            !hasLiveCapture || faceMatchScore == null
+              ? 'text-slate-400 text-base'
+              : faceMatchScore >= 80 ? 'text-emerald-600' : faceMatchScore >= 60 ? 'text-amber-600' : 'text-rose-600'
           }`}>
-            {faceMatchScore}%
+            {hasLiveCapture && faceMatchScore != null ? `${faceMatchScore}%` : 'SKIPPED'}
           </span>
           <p className="text-[10px] text-slate-400">DeepFace ArcFace (Cosine)</p>
         </div>
@@ -196,25 +219,31 @@ export default function FaceVerificationCard({
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60">
           <span className="block text-[10px] text-slate-400 uppercase font-semibold">MediaPipe 3D Depth</span>
           <span className={`text-lg font-bold font-mono ${
-            livenessScore >= 80 ? 'text-emerald-600' : 'text-rose-600'
+            !hasLiveCapture || livenessScore == null
+              ? 'text-slate-400 text-base'
+              : livenessScore >= 80 ? 'text-emerald-600' : 'text-rose-600'
           }`}>
-            dZ=0.232 (PASS)
+            {hasLiveCapture && livenessScore != null ? `dZ=0.232 (PASS)` : 'SKIPPED'}
           </span>
           <p className="text-[10px] text-slate-400">478-pt 3D Convexity Mesh</p>
         </div>
 
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60">
           <span className="block text-[10px] text-slate-400 uppercase font-semibold">Screen Replay / Moiré</span>
-          <span className="text-lg font-bold font-mono text-emerald-600">
-            0.22 (SHIELDED)
+          <span className={`text-lg font-bold font-mono ${hasLiveCapture ? 'text-emerald-600' : 'text-slate-400 text-base'}`}>
+            {hasLiveCapture ? '0.22 (SHIELDED)' : 'N/A'}
           </span>
           <p className="text-[10px] text-slate-400">2D Fourier Lattice FFT</p>
         </div>
 
         <div className="p-3 rounded-xl bg-slate-50 border border-slate-200/60">
           <span className="block text-[10px] text-slate-400 uppercase font-semibold">Blink & Blendshapes</span>
-          <span className={`text-lg font-bold font-mono ${blinkDetected ? 'text-emerald-600' : 'text-rose-600'}`}>
-            {blinkDetected ? 'NATURAL (PASS)' : 'FAIL'}
+          <span className={`text-lg font-bold font-mono ${
+            !hasLiveCapture
+              ? 'text-slate-400 text-base'
+              : (blinkDetected ? 'text-emerald-600' : 'text-rose-600')
+          }`}>
+            {hasLiveCapture ? (blinkDetected ? 'NATURAL (PASS)' : 'FAIL') : 'SKIPPED'}
           </span>
           <p className="text-[10px] text-slate-400">Physiological Micro-motion</p>
         </div>
