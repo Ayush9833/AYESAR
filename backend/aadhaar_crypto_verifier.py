@@ -130,57 +130,57 @@ class SatyapanAadhaarVerifier:
             print("[QR] Failed to decode image buffer")
             return None
 
+        def _clean(blist):
+            return [b for b in blist if b and b.format is not None and str(b.format) != "None" and (len(b.text.strip()) > 0 or len(b.bytes) > 0)]
+
         # Pass 1: Standard multi-angle scan
-        barcodes = zxingcpp.read_barcodes(img_bgr, try_rotate=True, try_downscale=True, try_invert=True)
+        barcodes = _clean(zxingcpp.read_barcodes(img_bgr, try_rotate=True, try_downscale=True, try_invert=True))
 
         # Pass 2: Pure barcode scan (for cropped QR images without margins)
         if not barcodes:
-            barcodes = zxingcpp.read_barcodes(img_bgr, is_pure=True, try_rotate=True, try_invert=True)
+            barcodes = _clean(zxingcpp.read_barcodes(img_bgr, is_pure=True, try_rotate=True, try_invert=True))
 
-        # Pass 3: Grayscale + CLAHE (fixes glare, reflections, and shadow unevenness)
+        # Pass 3: Multi-scale Pyramid Upscaling (critical for high-density V5 Secure QR matrices in mobile screenshots)
+        if not barcodes:
+            h, w = img_bgr.shape[:2]
+            for scale in [2.0, 1.5, 2.5, 3.0]:
+                resized = cv2.resize(img_bgr, (0, 0), fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                barcodes = _clean(zxingcpp.read_barcodes(resized, try_rotate=True, try_downscale=True, try_invert=True))
+                if barcodes:
+                    break
+
+        # Pass 4: Grayscale + CLAHE (fixes glare, reflections, and shadow unevenness)
         if not barcodes:
             gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             enhanced = clahe.apply(gray)
-            barcodes = zxingcpp.read_barcodes(enhanced, try_rotate=True, try_downscale=True, try_invert=True)
+            barcodes = _clean(zxingcpp.read_barcodes(enhanced, try_rotate=True, try_downscale=True, try_invert=True))
             if not barcodes:
-                barcodes = zxingcpp.read_barcodes(enhanced, is_pure=True, try_rotate=True)
+                barcodes = _clean(zxingcpp.read_barcodes(enhanced, is_pure=True, try_rotate=True))
 
-        # Pass 4: Grayscale + Otsu thresholding
+        # Pass 5: Grayscale + Otsu thresholding
         if not barcodes:
             gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             _, thresh = cv2.threshold(gray, 128, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
-            barcodes = zxingcpp.read_barcodes(thresh, try_rotate=True, try_invert=True)
+            barcodes = _clean(zxingcpp.read_barcodes(thresh, try_rotate=True, try_invert=True))
             if not barcodes:
-                barcodes = zxingcpp.read_barcodes(thresh, is_pure=True, try_rotate=True)
+                barcodes = _clean(zxingcpp.read_barcodes(thresh, is_pure=True, try_rotate=True))
 
-        # Pass 5: Adaptive Gaussian Thresholding (recovers blurred/faint matrix modules)
+        # Pass 6: Adaptive Gaussian Thresholding (recovers blurred/faint matrix modules)
         if not barcodes:
             gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
             for block_size in [21, 31, 51]:
                 adaptive = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, block_size, 5)
-                barcodes = zxingcpp.read_barcodes(adaptive, try_rotate=True, try_downscale=True)
+                barcodes = _clean(zxingcpp.read_barcodes(adaptive, try_rotate=True, try_downscale=True))
                 if barcodes:
                     break
-
-        # Pass 6: Rescaling / Multi-scale Pyramid (if image is low-res or giant phone capture)
-        if not barcodes:
-            h, w = img_bgr.shape[:2]
-            for target_w in [800, 1200, 1600]:
-                if abs(w - target_w) > 150:
-                    scale = target_w / w
-                    target_h = int(h * scale)
-                    resized = cv2.resize(img_bgr, (target_w, target_h), interpolation=cv2.INTER_CUBIC)
-                    barcodes = zxingcpp.read_barcodes(resized, try_rotate=True, try_downscale=True)
-                    if barcodes:
-                        break
 
         # Pass 7: OpenCV QRCodeDetector fallback
         if not barcodes:
             try:
                 detector = cv2.QRCodeDetector()
                 val, pts, _ = detector.detectAndDecode(img_bgr)
-                if val:
+                if val and len(val.strip()) > 0:
                     print(f"[QR] OpenCV detector found barcode: {val[:50]}...")
                     return {"text": val, "bytes": val.encode('utf-8', errors='ignore')}
             except Exception:
@@ -342,19 +342,34 @@ class SatyapanAadhaarVerifier:
                 result["warnings"].append(f"V2 extraction error: {v2_err}")
 
         # -------------------------------------------------------------
-        # ATTEMPT 2.2: Direct zlib decompression on raw byte stream
+        # ATTEMPT 2.2: Direct zlib decompression on raw byte stream / BigInt bytes
         # -------------------------------------------------------------
-        if not result.get("success") and len(raw_bytes) > 100:
+        if not result.get("success"):
             decomp_array = None
-            for offset in range(min(32, len(raw_bytes))):
-                for wbits in [16 + zlib.MAX_WBITS, zlib.MAX_WBITS, -15]:
-                    try:
-                        candidate_decomp = zlib.decompress(raw_bytes[offset:], wbits)
-                        if len(candidate_decomp) > 256:
-                            decomp_array = candidate_decomp
-                            break
-                    except Exception:
-                        pass
+            candidate_byte_sources = []
+            
+            if raw_text.strip().isdigit() and len(raw_text.strip()) > 100:
+                try:
+                    val = int(raw_text.strip())
+                    byte_len = (val.bit_length() + 7) // 8
+                    candidate_byte_sources.append(val.to_bytes(byte_len, byteorder='big'))
+                except Exception:
+                    pass
+            if len(raw_bytes) > 100:
+                candidate_byte_sources.append(raw_bytes)
+
+            for b_src in candidate_byte_sources:
+                for offset in range(min(32, len(b_src))):
+                    for wbits in [31, 16 + zlib.MAX_WBITS, zlib.MAX_WBITS, -15, 47, 0]:
+                        try:
+                            candidate_decomp = zlib.decompress(b_src[offset:], wbits)
+                            if len(candidate_decomp) > 256:
+                                decomp_array = candidate_decomp
+                                break
+                        except Exception:
+                            pass
+                    if decomp_array:
+                        break
                 if decomp_array:
                     break
 

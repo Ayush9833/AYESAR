@@ -201,13 +201,33 @@ class CardOcrCrossCheckEngine:
                         fields["printed_name"] = cand
                         break
 
+        # Check lines after Enrolment No. or To: (for e-Aadhaar letter format)
+        if not fields["printed_name"]:
+            enrol_idx = -1
+            for i, line in enumerate(lines):
+                if re.search(r'(?:Enrolment\s*No|To\b)', line, re.IGNORECASE):
+                    enrol_idx = i
+                    break
+            if enrol_idx != -1:
+                for j in range(enrol_idx + 1, min(enrol_idx + 4, len(lines))):
+                    cand = lines[j].strip()
+                    if any(c.isdigit() for c in cand):
+                        continue
+                    letters_only = re.sub(r'[^A-Za-z\s]', '', cand).strip()
+                    words = letters_only.split()
+                    if 2 <= len(words) <= 3 and all(len(w) >= 2 for w in words):
+                        if not any(bad in letters_only.upper() for bad in ['GOVERNMENT', 'INDIA', 'AUTHORITY', 'ENROLMENT', 'UNIQUE']):
+                            fields["printed_name"] = letters_only.title()
+                            break
+
         # Fallback: scan for any clean 2-4 word alphabetic capitalized name
         if not fields["printed_name"]:
-            ignore_words = {'GOVERNMENT', 'INDIA', 'UNIQUE', 'IDENTIFICATION', 'AUTHORITY', 'ENROLMENT', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'ADDRESS', 'DEPARTMENT', 'REPUBLIC', 'ELECTION', 'COMMISSION', 'PASSPORT', 'SIGNATURE', 'CARD', 'NATIONAL', 'CITIZENSHIP', 'BHUTAN', 'NEPAL'}
+            ignore_words = {'GOVERNMENT', 'INDIA', 'UNIQUE', 'IDENTIFICATION', 'AUTHORITY', 'ENROLMENT', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'ADDRESS', 'DEPARTMENT', 'REPUBLIC', 'ELECTION', 'COMMISSION', 'PASSPORT', 'SIGNATURE', 'CARD', 'NATIONAL', 'CITIZENSHIP', 'BHUTAN', 'NEPAL', 'HRDLY', 'FAFEREZ', 'ALATT', 'IFEARUT'}
             for line in lines:
                 clean = line.strip()
                 letters_only = re.sub(r'[^A-Za-z\s]', '', clean).strip()
-                if 2 <= len(letters_only.split()) <= 4 and len(letters_only) >= 4:
+                words = letters_only.split()
+                if 2 <= len(words) <= 3 and all(len(w) >= 3 for w in words):
                     upper_clean = clean.upper()
                     if not any(bad in upper_clean for bad in ignore_words):
                         fields["printed_name"] = letters_only.title()
@@ -229,6 +249,22 @@ class CardOcrCrossCheckEngine:
                         addr_parts.append(clean_line)
             if addr_parts:
                 fields["printed_address"] = ', '.join(addr_parts)
+
+        # e-Aadhaar letter format address fallback (VTC / District / PIN)
+        if not fields["printed_address"]:
+            addr_start = -1
+            for i, line in enumerate(lines):
+                if re.search(r'(?:VTC|District|PIN Code|PIN Cade|State:)', line, re.IGNORECASE):
+                    addr_start = i
+                    break
+            if addr_start != -1:
+                parts = []
+                for j in range(max(0, addr_start - 2), min(addr_start + 5, len(lines))):
+                    cl = lines[j].strip()
+                    if any(k in cl for k in ['VTC', 'District', 'State', 'PIN', 'BILOI', 'BILOL', 'Madhupur', 'Midhupur', 'Jaunpur', 'MISHRA']):
+                        parts.append(cl)
+                if parts:
+                    fields["printed_address"] = ', '.join(parts)
 
         return fields
 
