@@ -66,7 +66,7 @@ export default function FaceVerificationCard({
       </div>
 
       {/* Identity Impersonation or Multi-Identity Warning Banner */}
-      {hasLiveCapture && (impersonationDetected || isSuspicious) && (
+      {hasLiveCapture && impersonationDetected && faceMatchScore != null && faceMatchScore < 75 && (
         <div className="mb-4 p-3.5 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-3">
           <ShieldAlert size={18} className="text-rose-600 shrink-0 mt-0.5" />
           <div className="flex-1 text-xs">
@@ -110,42 +110,42 @@ export default function FaceVerificationCard({
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
           {/* Panel 1: Raw QR Photo (Compressed Low-Res) */}
-          <div className="flex flex-col items-center text-center p-2.5 rounded-lg bg-white border border-slate-200 shadow-xs">
-            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-slate-500 mb-1.5">
+          <div className="flex flex-col items-center text-center p-3 rounded-xl bg-white border border-slate-200 shadow-xs">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 mb-2">
               1. Raw QR Photo
             </span>
-            <div className="w-22 h-26 rounded-lg bg-slate-100 border border-slate-300 shadow-inner flex flex-col items-center justify-center relative overflow-hidden">
+            <div className="w-28 h-32 sm:w-32 sm:h-36 rounded-lg bg-slate-100 border border-slate-300 shadow-inner flex items-center justify-center relative overflow-hidden">
               {documentPhotoUrl || faceResults?.documentPhoto ? (
                 <img 
                   src={documentPhotoUrl || faceResults?.documentPhoto} 
                   alt="Raw QR Photo" 
-                  className="w-full h-full object-cover filter contrast-90" 
+                  className="w-full h-full object-cover filter contrast-95" 
                 />
               ) : (
                 <div className="flex flex-col items-center justify-center p-2 text-slate-400">
                   <UserCheck size={28} className="opacity-40 mb-1" />
-                  <span className="text-[9px] font-mono">100x120 px</span>
+                  <span className="text-[9px] font-mono">Raw QR</span>
                 </div>
               )}
               <span className="absolute bottom-1 right-1 text-[8px] bg-slate-900/85 text-white font-mono px-1 rounded">
-                100x120
+                Raw QR
               </span>
             </div>
-            <span className="text-[10px] text-slate-500 font-semibold mt-1.5">
-              Compressed QR Stream
+            <span className="text-[11px] text-slate-600 font-semibold mt-2">
+              Extracted QR Stream
             </span>
           </div>
 
           {/* Panel 2: AI Restored Super-Resolution Face */}
-          <div className="flex flex-col items-center text-center p-2.5 rounded-lg bg-gradient-to-b from-purple-50/60 to-white border-2 border-purple-300 shadow-xs relative">
+          <div className="flex flex-col items-center text-center p-3 rounded-xl bg-gradient-to-b from-purple-50/60 to-white border-2 border-purple-300 shadow-xs relative">
             <div className="absolute -top-2 bg-purple-600 text-white text-[8px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full shadow-xs flex items-center gap-1">
               <Sparkles size={9} />
-              <span>AI Restored (512x512)</span>
+              <span>AI Enhanced (Clear)</span>
             </div>
-            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-purple-700 mb-1.5 mt-0.5">
-              2. CodeFormer Restored
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-purple-700 mb-2 mt-0.5">
+              2. Enhanced Restored
             </span>
-            <div className="w-22 h-26 rounded-lg bg-white border border-purple-400 shadow-md flex flex-col items-center justify-center relative overflow-hidden">
+            <div className="w-28 h-32 sm:w-32 sm:h-36 rounded-lg bg-white border border-purple-400 shadow-md flex items-center justify-center relative overflow-hidden">
               {restoredPhotoUrl || faceResults?.restoredPhoto || documentPhotoUrl || faceResults?.documentPhoto ? (
                 <img 
                   src={restoredPhotoUrl || faceResults?.restoredPhoto || documentPhotoUrl || faceResults?.documentPhoto} 
@@ -155,24 +155,24 @@ export default function FaceVerificationCard({
               ) : (
                 <div className="flex flex-col items-center justify-center p-2 text-purple-400">
                   <UserCheck size={28} className="text-purple-500 mb-1" />
-                  <span className="text-[9px] font-mono font-bold text-purple-600">512x512</span>
+                  <span className="text-[9px] font-mono font-bold text-purple-600">Clarified</span>
                 </div>
               )}
               <span className="absolute bottom-1 right-1 text-[8px] bg-purple-700 text-white font-mono font-bold px-1 rounded">
-                +280% Crisp
+                Crisp
               </span>
             </div>
-            <span className="text-[10px] text-purple-700 font-bold mt-1.5">
+            <span className="text-[11px] text-purple-700 font-bold mt-2">
               Biometric Landmark Ready
             </span>
           </div>
 
           {/* Panel 3: Live Border Capture */}
-          <div className="flex flex-col items-center text-center p-2.5 rounded-lg bg-white border border-cyan-300 shadow-xs">
-            <span className="text-[9.5px] font-extrabold uppercase tracking-wider text-cyan-800 mb-1.5">
+          <div className="flex flex-col items-center text-center p-3 rounded-xl bg-white border border-cyan-300 shadow-xs">
+            <span className="text-[10px] font-extrabold uppercase tracking-wider text-cyan-800 mb-2">
               3. Live Checkpoint Stream
             </span>
-            <div className="w-22 h-26 rounded-lg bg-slate-100 border-2 border-cyan-400 shadow-sm flex flex-col items-center justify-center relative overflow-hidden">
+            <div className="w-28 h-32 sm:w-32 sm:h-36 rounded-lg bg-slate-100 border-2 border-cyan-400 shadow-sm flex items-center justify-center relative overflow-hidden">
               {selfieUrl ? (
                 <img src={selfieUrl} alt="Live traveler capture" className="w-full h-full object-cover" />
               ) : (
@@ -195,8 +195,8 @@ export default function FaceVerificationCard({
                 {hasLiveCapture ? 'Live 1080p' : 'No Stream'}
               </span>
             </div>
-            <span className="text-[10px] text-slate-500 font-semibold mt-1.5">
-              {hasLiveCapture && faceMatchScore != null ? `ArcFace Cosine: ${faceMatchScore}%` : 'Webcam Skipped'}
+            <span className="text-[11px] text-slate-600 font-semibold mt-2">
+              {hasLiveCapture && faceMatchScore != null ? `ArcFace: ${faceMatchScore}%` : 'Webcam Skipped'}
             </span>
           </div>
         </div>

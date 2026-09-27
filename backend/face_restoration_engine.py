@@ -71,46 +71,53 @@ class FaceRestorationEngine:
 
         return upscaled, norm_tensor
 
-    def _neural_guided_restoration_fallback(self, face_bgr: np.ndarray, target_size: Tuple[int, int] = (512, 512)) -> np.ndarray:
+    def _neural_guided_restoration_fallback(self, face_bgr: np.ndarray, target_size: Optional[Tuple[int, int]] = None) -> np.ndarray:
         """
-        High-fidelity edge restoration pipeline (< 20ms):
-        1. Multi-scale bilateral de-blocking (clears 8x8 JPEG macroblock compression artifacts)
-        2. Unsharp contrast mask with Laplacian edge reconstruction
-        3. Adaptive histogram equalization (CLAHE) on luminance channel for depth recovery
-        4. Detail preservation blending to keep biometric facial integrity intact
+        High-clarity detail and edge enhancement pipeline:
+        1. Gentle edge-preserving dequantization (eliminates JPEG block noise without blurring fine facial features)
+        2. Adaptive contrast equalization (CLAHE) on luminance for crisp eye, lip, and nose contours
+        3. Precise unsharp masking for sharp iris, eyelid, and structural definition
+        4. Preserves exact input dimensions (w, h) so size matches the extracted QR image perfectly
         """
-        # Step 1: Smooth JPEG block artifacts while preserving sharp edges
-        deblocked = cv2.bilateralFilter(face_bgr, d=9, sigmaColor=75, sigmaSpace=75)
+        h, w = face_bgr.shape[:2]
+        if target_size is None:
+            target_size = (w, h)
 
-        # Step 2: High-resolution Lanczos supersampling
-        upscaled = cv2.resize(deblocked, target_size, interpolation=cv2.INTER_LANCZOS4)
+        # Step 1: Gentle edge-preserving filter (replaces heavy blurring bilateral filter)
+        # Keeps sharp facial edges, pupils, and hair definition intact
+        if min(h, w) > 80:
+            deblocked = cv2.edgePreservingFilter(face_bgr, flags=1, sigma_s=10, sigma_r=0.15)
+        else:
+            deblocked = face_bgr.copy()
 
-        # Step 3: CLAHE enhancement in LAB color space (improves pupil & facial contour sharpness)
-        lab = cv2.cvtColor(upscaled, cv2.COLOR_BGR2LAB)
+        # Step 2: High-definition contrast enhancement via CLAHE in LAB space
+        lab = cv2.cvtColor(deblocked, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        cl = clahe.apply(l)
-        enhanced_lab = cv2.merge((cl, a, b))
-        contrast_enhanced = cv2.cvtColor(enhanced_lab, cv2.COLOR_LAB2BGR)
+        clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(4, 4))
+        l_enhanced = clahe.apply(l)
+        contrast_enhanced = cv2.cvtColor(cv2.merge((l_enhanced, a, b)), cv2.COLOR_LAB2BGR)
 
-        # Step 4: High-frequency unsharp mask for iris and eyelid definition
-        gaussian = cv2.GaussianBlur(contrast_enhanced, (0, 0), sigmaX=2.0)
-        unsharp = cv2.addWeighted(contrast_enhanced, 1.5, gaussian, -0.5, 0)
+        # Step 3: Precise unsharp mask for crisp facial details and edge sharpness
+        gaussian = cv2.GaussianBlur(contrast_enhanced, (0, 0), sigmaX=0.8)
+        sharp = cv2.addWeighted(contrast_enhanced, 1.45, gaussian, -0.45, 0)
 
-        # Step 5: Preserve subtle identity features with soft blend
-        restored = cv2.addWeighted(contrast_enhanced, 0.3, unsharp, 0.7, 0)
+        # Step 4: Ensure exact match with requested target dimensions
+        if (sharp.shape[1], sharp.shape[0]) != target_size:
+            restored = cv2.resize(sharp, target_size, interpolation=cv2.INTER_LANCZOS4)
+        else:
+            restored = sharp
+
         return restored
 
     def restore_face(self, image_input: Union[str, bytes, Image.Image, np.ndarray]) -> Dict[str, Any]:
         """
-        Restores a tiny 100x120 px low-res QR photo into a high-fidelity 512x512 biometric portrait.
+        Restores low-res QR photo into a crisp, high-clarity portrait matching original dimensions.
         Returns:
-            - original_dims: Original resolution (e.g., [100, 120])
-            - restored_dims: Output resolution (512, 512)
-            - upscale_factor: e.g. 4.2x
+            - original_dims: Original resolution (e.g., [60, 60] or [100, 120])
+            - restored_dims: Output resolution matching original dimensions
             - original_base64: Raw low-res photo
-            - restored_base64: Super-resolved crisp photo
-            - execution_time_ms: Restoration latency (typically 15-45ms)
+            - restored_base64: Clarified crisp photo
+            - execution_time_ms: Restoration latency
             - method: 'ONNX_GFPGAN' or 'NEURAL_GUIDED_SUPER_RES'
         """
         start_time = time.perf_counter()
@@ -141,11 +148,11 @@ class FaceRestorationEngine:
 
         h_orig, w_orig = orig_bgr.shape[:2]
 
-        # Execute restoration
+        # Execute restoration matching original image dimensions
         method_used = "NEURAL_GUIDED_SUPER_RES"
         if self.session is not None:
             try:
-                upscaled, norm_tensor = self._preprocess_lowres_face(orig_bgr, (512, 512))
+                upscaled, norm_tensor = self._preprocess_lowres_face(orig_bgr, (w_orig, h_orig))
                 ort_inputs = {self.input_name: norm_tensor}
                 ort_outs = self.session.run([self.output_name], ort_inputs)
                 out_tensor = ort_outs[0][0]  # CHW
@@ -154,21 +161,18 @@ class FaceRestorationEngine:
                 method_used = "ONNX_GFPGAN"
             except Exception as e:
                 print(f"[FaceRestorationEngine] ONNX inference error: {e}, falling back to neural guided filter.")
-                restored_bgr = self._neural_guided_restoration_fallback(orig_bgr, (512, 512))
+                restored_bgr = self._neural_guided_restoration_fallback(orig_bgr, target_size=(w_orig, h_orig))
         else:
-            restored_bgr = self._neural_guided_restoration_fallback(orig_bgr, (512, 512))
+            restored_bgr = self._neural_guided_restoration_fallback(orig_bgr, target_size=(w_orig, h_orig))
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         # Encode both original and restored to base64 Data URLs
-        _, orig_buf = cv2.imencode('.jpg', orig_bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        _, orig_buf = cv2.imencode('.jpg', orig_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
         orig_b64 = "data:image/jpeg;base64," + base64.b64encode(orig_buf).decode('ascii')
 
-        _, rest_buf = cv2.imencode('.jpg', restored_bgr, [cv2.IMWRITE_JPEG_QUALITY, 96])
+        _, rest_buf = cv2.imencode('.jpg', restored_bgr, [cv2.IMWRITE_JPEG_QUALITY, 98])
         rest_b64 = "data:image/jpeg;base64," + base64.b64encode(rest_buf).decode('ascii')
-
-        upscale_x = round(512 / max(1, w_orig), 1)
-        upscale_y = round(512 / max(1, h_orig), 1)
 
         restored_pil = Image.fromarray(cv2.cvtColor(restored_bgr, cv2.COLOR_BGR2RGB))
 
@@ -177,9 +181,9 @@ class FaceRestorationEngine:
             "method": method_used,
             "execution_time_ms": elapsed_ms,
             "original_resolution": f"{w_orig}x{h_orig} px",
-            "restored_resolution": "512x512 px",
-            "upscale_factor": f"{max(upscale_x, upscale_y)}x",
-            "clarity_boost": "+280%",
+            "restored_resolution": f"{w_orig}x{h_orig} px",
+            "upscale_factor": "1.0x (Native Resolution Enhanced)",
+            "clarity_boost": "High-Definition Edge Sharpness",
             "biometric_readiness": "OPTIMAL_FOR_ARCFACE",
             "original_photo_base64": orig_b64,
             "restored_photo_base64": rest_b64,
