@@ -79,6 +79,16 @@ class ScreeningRequest(BaseModel):
     live_webcam_frame: Optional[str] = Field(None, description="Live camera frame (Filepath or Data URL)")
 
 
+@app.on_event("shutdown")
+def on_shutdown():
+    """Safely closes MediaPipe and AI engine handles during server shutdown."""
+    global _liveness_engine
+    if _liveness_engine is not None and hasattr(_liveness_engine, "close"):
+        try:
+            _liveness_engine.close()
+        except Exception:
+            pass
+
 @app.get("/")
 @app.get("/health")
 @app.get("/api/health")
