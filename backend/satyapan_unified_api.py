@@ -63,7 +63,7 @@ def get_engines():
     if _face_matcher is None:
         print("  [AI ENGINE] Initializing DeepFace ArcFace Biometric Matcher...")
         from live_face_matcher_engine import LiveFaceMatcherEngine
-        _face_matcher = LiveFaceMatcherEngine(model_name="ArcFace", distance_metric="cosine", detector_backend="skip")
+        _face_matcher = LiveFaceMatcherEngine(model_name="ArcFace", distance_metric="cosine", detector_backend="opencv")
     if _liveness_engine is None:
         print("  [AI ENGINE] Initializing Anti-Spoofing & Liveness Engine...")
         from anti_spoofing_liveness_engine import AntiSpoofingLivenessEngine
@@ -220,18 +220,34 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
 
         try:
             restored_res = restorer.restore_face(qr_photo_for_matching)
-            step_results["face_restoration"] = restored_res
             if restored_res and "restored_image" in restored_res:
-                qr_photo_for_matching = restored_res["restored_image"]
+                restored_path = "restored_qr_photo_512x512.jpg"
+                if hasattr(restored_res["restored_image"], "save"):
+                    restored_res["restored_image"].save(restored_path)
+                qr_photo_for_matching = restored_path
+
+            clean_restored = {k: v for k, v in restored_res.items() if k not in ("restored_image", "restored_bgr")}
+            step_results["face_restoration"] = clean_restored
         except Exception as e:
             print(f"[RESTORATION NOTICE] {e}")
 
     # 5. 1:1 Live Face Matcher (ArcFace)
     if has_custom_live_cam and qr_photo_for_matching:
+        # Match live webcam stream against the cardholder photo (restored or raw)
         face_match_res = matcher.verify_1to1(
             live_person_input=live_cam,
             qr_photo_input=qr_photo_for_matching
         )
+
+        # If matching against restored photo did not verify and raw photo is available, cross-check against raw
+        if not face_match_res.get("verified") and os.path.exists("current_qr_extracted_face.jpg") and qr_photo_for_matching != "current_qr_extracted_face.jpg":
+            raw_match_res = matcher.verify_1to1(
+                live_person_input=live_cam,
+                qr_photo_input="current_qr_extracted_face.jpg"
+            )
+            if raw_match_res.get("verified") or (raw_match_res.get("similarity_percentage", 0) > face_match_res.get("similarity_percentage", 0)):
+                face_match_res = raw_match_res
+
     elif has_custom_live_cam and not qr_photo_for_matching:
         face_match_res = {
             "success": False,
@@ -270,7 +286,7 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
             gate_decision = "REQUIRE_FULL_CREDENTIAL"
             action = "NOTICE: Front QR code scanned (no embedded photo). Present the Large Secure QR code on the back of the Aadhaar card to complete 1:1 facial biometric clearance."
             status_code = "NEED_BACK_QR"
-        elif not is_same_person or (sim_percentage is not None and sim_percentage < 70.0):
+        elif not is_same_person:
             gate_decision = "BORDER_INTERROGATION"
             action = "FLAG: Biometric mismatch between live traveler and document bearer. Escort to secondary screening."
             status_code = "IMPERSONATION_ALERT"
