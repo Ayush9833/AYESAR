@@ -199,22 +199,32 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
 
     # 4. Face Restoration & Super-Resolution
     restored_res = None
-    qr_photo_for_matching = "restored_qr_photo_512x512.jpg"
-    if qr_res and qr_res.get("photo"):
+    qr_photo_for_matching = None
+    extracted_qr_photo_b64 = None
+
+    if qr_res and (qr_res.get("photo_base64") or qr_res.get("photo")):
+        photo_raw = qr_res.get("photo_base64") or qr_res.get("photo")
+        if isinstance(photo_raw, str) and photo_raw.startswith("data:image"):
+            import base64
+            encoded = photo_raw.split(",", 1)[1] if "," in photo_raw else photo_raw
+            photo_bytes = base64.b64decode(encoded.strip())
+            with open("current_qr_extracted_face.jpg", "wb") as f_face:
+                f_face.write(photo_bytes)
+            qr_photo_for_matching = "current_qr_extracted_face.jpg"
+            extracted_qr_photo_b64 = photo_raw
+        elif isinstance(photo_raw, bytes):
+            with open("current_qr_extracted_face.jpg", "wb") as f_face:
+                f_face.write(photo_raw)
+            qr_photo_for_matching = "current_qr_extracted_face.jpg"
+            extracted_qr_photo_b64 = "data:image/jpeg;base64," + base64.b64encode(photo_raw).decode("ascii")
+
         try:
-            restored_res = restorer.restore_face(qr_res["photo"])
+            restored_res = restorer.restore_face(qr_photo_for_matching)
             step_results["face_restoration"] = restored_res
-            if "restored_image" in restored_res:
+            if restored_res and "restored_image" in restored_res:
                 qr_photo_for_matching = restored_res["restored_image"]
-        except Exception:
-            pass
-    elif os.path.exists("restored_qr_photo_512x512.jpg"):
-        restored_res = {
-            "restored_resolution": "512x512 px",
-            "method": "NEURAL_GUIDED_SUPER_RES",
-            "biometric_readiness": "OPTIMAL_FOR_ARCFACE"
-        }
-        step_results["face_restoration"] = restored_res
+        except Exception as e:
+            print(f"[RESTORATION NOTICE] {e}")
 
     # 5. 1:1 Live Face Matcher (ArcFace)
     if has_custom_live_cam and qr_photo_for_matching:
@@ -222,6 +232,14 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
             live_person_input=live_cam,
             qr_photo_input=qr_photo_for_matching
         )
+    elif has_custom_live_cam and not qr_photo_for_matching:
+        face_match_res = {
+            "success": False,
+            "verified": None,
+            "similarity_percentage": None,
+            "verdict": "SKIPPED_NO_DOCUMENT_PHOTO",
+            "summary": "Live traveler was captured, but uploaded document/QR code does not contain an embedded cardholder photograph. Please upload the Back QR Code or full Aadhaar document."
+        }
     else:
         face_match_res = {
             "success": True,
@@ -238,7 +256,7 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
     if has_custom_live_cam:
         is_live = liveness_res.get("is_live", False)
         is_same_person = face_match_res.get("verified", False)
-        sim_percentage = face_match_res.get("similarity_percentage", 0.0)
+        sim_percentage = face_match_res.get("similarity_percentage")
 
         if not is_live:
             gate_decision = "REJECT_SPOOF_ATTACK"
@@ -248,6 +266,10 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
             gate_decision = "REJECT_TAMPERED_CARD"
             action = "HALT: Physical card text does not match cryptographic QR data. Confiscate forged credential."
             status_code = "FORGERY_DETECTED"
+        elif not qr_photo_for_matching:
+            gate_decision = "REQUIRE_FULL_CREDENTIAL"
+            action = "NOTICE: Front QR code scanned (no embedded photo). Present the Large Secure QR code on the back of the Aadhaar card to complete 1:1 facial biometric clearance."
+            status_code = "NEED_BACK_QR"
         elif not is_same_person or (sim_percentage is not None and sim_percentage < 70.0):
             gate_decision = "BORDER_INTERROGATION"
             action = "FLAG: Biometric mismatch between live traveler and document bearer. Escort to secondary screening."
@@ -374,12 +396,12 @@ def screen_traveler(payload: ScreeningRequest) -> Dict[str, Any]:
         "action_required": action,
         "extracted_identity": extracted_identity,
         "biometrics": {
-            "is_same_person": is_same_person if has_custom_live_cam else None,
-            "similarity_score": f"{sim_percentage}%" if has_custom_live_cam else "N/A (No Live Camera)",
+            "is_same_person": is_same_person if (has_custom_live_cam and qr_photo_for_matching) else None,
+            "similarity_score": f"{sim_percentage}%" if (has_custom_live_cam and qr_photo_for_matching and sim_percentage is not None) else ("N/A (No Photo in QR)" if (has_custom_live_cam and not qr_photo_for_matching) else "N/A (No Live Camera)"),
             "is_live": is_live if has_custom_live_cam else None,
             "liveness_confidence": f"{liveness_res.get('liveness_score', 0)}%" if has_custom_live_cam else "N/A (No Live Camera)",
             "attack_type": liveness_res.get("attack_type") if has_custom_live_cam else None,
-            "status": "VERIFIED" if has_custom_live_cam else "SKIPPED"
+            "status": "VERIFIED" if (has_custom_live_cam and qr_photo_for_matching and is_same_person) else ("NO_QR_PHOTO" if (has_custom_live_cam and not qr_photo_for_matching) else "SKIPPED")
         },
         "total_latency_ms": total_time_ms,
         "detailed_steps": step_results
