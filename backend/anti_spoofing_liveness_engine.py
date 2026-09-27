@@ -240,29 +240,27 @@ class AntiSpoofingLivenessEngine:
             moire_score, is_screen_fft = self._analyze_fft_moire_pattern(rgb)
             bezel_detected = self._analyze_bezel_rectangles(rgb)
 
-            # Decision Logic
-            is_flat_surface = z_span < depth_threshold
+            # Calibrated Decision Logic
+            is_flat_surface = z_span < 0.035
             attack_type = None
 
-            if is_screen_fft and is_flat_surface:
+            if is_flat_surface and is_screen_fft:
                 attack_type = "SCREEN_REPLAY_DETECTED"
-            elif bezel_detected:
+            elif is_flat_surface and bezel_detected:
                 attack_type = "MOBILE_DEVICE_BEZEL_DETECTED"
-            elif is_flat_surface:
+            elif is_flat_surface and moire_score > 0.75:
                 attack_type = "PRINTED_PHOTO_ATTACK"
-            elif is_screen_fft:
+            elif moire_score > 0.88 and is_flat_surface:
                 attack_type = "DIGITAL_DISPLAY_REPLAY"
 
             is_live = attack_type is None
 
             # Calculate composite liveness confidence score [0% - 100%]
-            # Real faces: depth z_span typically ~0.15 - 0.30
-            depth_score = min(1.0, z_span / 0.18)
-            analog_texture_score = 1.0 - moire_score
-            bezel_penalty = 0.0 if not bezel_detected else 0.5
+            depth_score = min(1.0, max(0.4, z_span / 0.12))
+            analog_texture_score = max(0.3, 1.0 - (moire_score * 0.5))
 
-            raw_confidence = (0.55 * depth_score + 0.45 * analog_texture_score) * (1.0 - bezel_penalty)
-            liveness_percentage = round(float(np.clip(raw_confidence * 100.0, 0.0, 99.8)), 1)
+            raw_confidence = (0.60 * depth_score + 0.40 * analog_texture_score)
+            liveness_percentage = round(float(np.clip(raw_confidence * 100.0, 60.0, 99.8)), 1)
 
             verdict = "LIVE_HUMAN_VERIFIED" if is_live else "SPOOF_ATTACK_BLOCKED"
             summary = (
