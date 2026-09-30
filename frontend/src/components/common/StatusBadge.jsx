@@ -5,6 +5,7 @@ export default function StatusBadge({ status, size = 'md', showIcon = true }) {
   const normStatus = (status || '').toUpperCase();
 
   const isVerified = normStatus === 'VERIFIED' || normStatus === 'PASS';
+  const isVisaRequired = normStatus.includes('VISA');
   const isReview = normStatus === 'REVIEW REQUIRED' || normStatus === 'WARNING';
   const isSuspicious = normStatus === 'SUSPICIOUS' || normStatus === 'FAIL';
 
@@ -14,6 +15,9 @@ export default function StatusBadge({ status, size = 'md', showIcon = true }) {
   if (isVerified) {
     bgClasses = 'bg-emerald-50 text-emerald-700 border-emerald-200 ring-1 ring-emerald-500/10';
     Icon = CheckCircle2;
+  } else if (isVisaRequired) {
+    bgClasses = 'bg-amber-50 text-amber-900 border-amber-300 ring-1 ring-amber-500/20';
+    Icon = AlertTriangle;
   } else if (isReview) {
     bgClasses = 'bg-amber-50 text-amber-800 border-amber-200 ring-1 ring-amber-500/10';
     Icon = AlertTriangle;

@@ -19,3 +19,8 @@ build/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Temp runtime image dumps
+backend/*.jpg
+backend/*.png
+backend/python

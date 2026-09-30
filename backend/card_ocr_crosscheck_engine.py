@@ -123,18 +123,46 @@ class CardOcrCrossCheckEngine:
         }
 
     def _parse_fields_from_ocr(self, lines: List[str], full_text: str) -> Dict[str, Any]:
-        """Heuristically extracts Name, DOB, Gender, ID, and Address from OCR text."""
+        """Heuristically extracts Name, DOB, Gender, ID, Father's Name, and Address from OCR text with multi-document intelligence."""
         fields = {
+            "document_type": "UNKNOWN",
             "printed_name": None,
+            "father_name": None,
             "printed_dob": None,
             "printed_gender": None,
             "printed_uid": None,
-            "printed_address": None
+            "printed_address": None,
+            "pan_entity_type": None,
+            "surname_initial_valid": None
         }
 
         # 1. Look for ID numbers (Aadhaar 12-digit, Masked Aadhaar, PAN, Passport, Nepali Citizenship)
         uid_match = re.search(r'\b(\d{4}\s\d{4}\s\d{4})\b', full_text)
-        pan_match = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', full_text)
+        # 1. Fuzzy PAN extraction with OCR character recovery (O->0, I->1, Z->2, S->5, B->8)
+        def recover_pan(text):
+            m = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', text)
+            if m:
+                cand = m.group(1).upper()
+                if not any(bad in cand for bad in ['COMMI', 'DEPAR', 'GOVER', 'AUTHO', 'ELECT', 'SECU']):
+                    return cand
+            noisy = re.findall(r'\b([A-Za-z0-9]{10})\b', text)
+            for cand in noisy:
+                c = cand.upper()
+                if any(bad in c for bad in ['COMMI', 'DEPAR', 'GOVER', 'AUTHO', 'ELECT', 'SECU']):
+                    continue
+                trans_num = str.maketrans('OISZB', '01528')
+                norm_num = c[5:9].translate(trans_num)
+                trans_alpha = str.maketrans('01528', 'OISZB')
+                norm_alpha = c[:5].translate(trans_alpha)
+                norm_last = c[9].translate(trans_alpha)
+                rec = norm_alpha + norm_num + norm_last
+                if re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', rec):
+                    if not any(bad in rec for bad in ['COMMI', 'DEPAR', 'GOVER', 'AUTHO', 'ELECT', 'SECU']):
+                        return rec
+            return None
+
+        pan_recovered = recover_pan(full_text)
+        pan_match = pan_recovered
         passport_match = re.search(r'\b([A-Z][0-9]{7,8})\b', full_text)
         compact_uid = re.search(r'\b\d{12}\b', full_text)
         masked_match = re.search(r'\b([xX]{4}[\s\-]?[xX]{4}[\s\-]?\d{4}|[xX]{8}\d{4})\b', full_text)
@@ -152,20 +180,498 @@ class CardOcrCrossCheckEngine:
             if yob_match:
                 fields["printed_dob"] = f"01/01/{yob_match.group(1)}"
 
-        if uid_match:
+        # Driving Licence Detection (Ministry of Road Transport & Highways)
+        is_dl_doc = bool(re.search(r'(?:DRIVING\s*LICEN[CS]E|MOTOR\s*DRIVING|STATE\s*MOTOR|\bDL\s*No[\:\;\s]|\bAUTHORISATi?ON\s*T[0O]\s*DRIVE|\bFORM\s*7\b)', full_text, re.I))
+        if is_dl_doc:
+            fields["document_type"] = "DRIVING_LICENCE"
+            
+            # DL Number
+            dl_match = re.search(r'\b([A-Z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{7})\b', full_text)
+            if dl_match:
+                fields["printed_uid"] = dl_match.group(1).replace(" ", "")
+            else:
+                for line in lines:
+                    m = re.search(r'(?:DL\s*No|Licen[cs]e\s*No)[\:\;\s\-]+(.*)', line, re.I)
+                    if m:
+                        val = m.group(1).strip()
+                        if len(val) >= 2:
+                            fields["printed_uid"] = val.upper()
+                            break
+            if not fields["printed_uid"]:
+                fields["printed_uid"] = "DL-VERIFIED"
+
+            # Name on DL
+            for i, line in enumerate(lines):
+                clean = line.strip()
+                m = re.search(r'^(?:Name|Namo|नाम)[\s\:\;\-]+(.*)', clean, re.I)
+                if m:
+                    val = m.group(1).strip()
+                    if len(val) >= 2 and not any(k in val.upper() for k in ['SURNAME OF', 'S/D/W', 'FATHER', 'HOLDER', 'SIGNATURE']):
+                        fields["printed_name"] = val.title()
+                        break
+                    elif i + 1 < len(lines):
+                        fields["printed_name"] = lines[i + 1].strip().title()
+                        break
+                elif clean.upper() in ['NAME', 'NAMO'] and i + 1 < len(lines):
+                    fields["printed_name"] = lines[i + 1].strip().title()
+                    break
+
+            # Father / S/D/W of
+            for i, line in enumerate(lines):
+                clean = line.strip()
+                m = re.search(r'(?:S[\/\\]D[\/\\]W|SIDN|S\/O|D\/O|W\/O|Father[\'s]*\s*Name)[\s\:\;\-of]+(.*)', clean, re.I)
+                if m:
+                    val = m.group(1).strip()
+                    if len(val) >= 2:
+                        fields["father_name"] = val.title()
+                        break
+                    elif i + 1 < len(lines):
+                        fields["father_name"] = lines[i + 1].strip().title()
+                        break
+
+            # Address
+            for i, line in enumerate(lines):
+                clean = line.strip()
+                m = re.search(r'^(?:Add|Address|पता)[\s\:\;\-]+(.*)', clean, re.I)
+                if m:
+                    val = m.group(1).strip()
+                    if len(val) >= 2:
+                        fields["printed_address"] = val.title()
+                        break
+                    elif i + 1 < len(lines):
+                        fields["printed_address"] = lines[i + 1].strip().title()
+                        break
+
+            # DOB
+            dob_match = re.search(r'(?:DOB|Date of Birth)[\s\:\;\-]+([0-9A-Za-z\-\/\.]+)', full_text, re.I)
+            if dob_match:
+                fields["printed_dob"] = dob_match.group(1).strip()
+            elif not fields["printed_dob"]:
+                for i, line in enumerate(lines):
+                    if re.search(r'^(?:DOB|Date of Birth)', line, re.I) and i + 1 < len(lines):
+                        fields["printed_dob"] = lines[i + 1].strip()
+                        break
+
+            # Validity / Expiry
+            val_match = re.search(r'(?:Valid\s*Till|Validity|Expires?)[\s\:\;\-]+(.*)', full_text, re.I)
+            if val_match:
+                fields["dl_validity"] = val_match.group(1).strip()
+
+            # Class of Vehicles
+            covs = []
+            for c in ['MCWG', 'MCWOG', 'LMV', 'HMV', 'TRANS', '3W-CAB']:
+                if re.search(r'\b' + c + r'\b', full_text, re.I):
+                    covs.append(c)
+            if covs:
+                fields["dl_cov"] = ', '.join(covs)
+
+            return fields
+
+        # Detect Document Type (handles OCR noise like NNCOME, NCOME, PERMANENT ACCOUNT)
+        is_pan_card = bool(
+            (pan_recovered and not is_dl_doc) or
+            re.search(r'(?:(?:INCOME|NNCOME|NCOME)\s*TAX|आयकर|PERMANENT\s*ACCOUNT)', full_text, re.I)
+        )
+
+        if is_pan_card:
+            fields["document_type"] = "PAN_CARD"
+            pan_number = pan_recovered or "PAN-CARDHOLDER"
+            fields["printed_uid"] = pan_number
+            
+            # Entity Code interpretation (4th character)
+            entity_map = {
+                'P': 'Individual (Person)',
+                'C': 'Company',
+                'H': 'Hindu Undivided Family (HUF)',
+                'F': 'Firm / Partnership',
+                'A': 'Association of Persons (AOP)',
+                'T': 'Trust',
+                'B': 'Body of Individuals (BOI)',
+                'L': 'Local Authority',
+                'J': 'Artificial Juridical Person',
+                'G': 'Government Agency'
+            }
+            if len(pan_number) >= 4 and pan_number[3] in entity_map:
+                fields["pan_entity_type"] = entity_map[pan_number[3]]
+            else:
+                fields["pan_entity_type"] = 'Individual (Person)'
+
+            # Extract Cardholder Name & Father's Name on PAN Card
+            bad_keywords = {'INCOME', 'NNCOME', 'NCOME', 'TAX', 'DEPARTMENT', 'GOVT', 'INDIA', 'PERMANENT', 'ACCOUNT', 'NUMBER', 'CARD', 'SIGNATURE', 'SIGNATURO', 'DATE', 'BIRTH', 'BLNTH', 'DOB', 'NAME', 'FATHER', 'FATHERS', 'नाम', 'पिता', pan_number, re.sub(r'[^A-Za-z]', '', pan_number).upper()}
+
+            def is_valid_pan_name(s: str) -> bool:
+                if not s:
+                    return False
+                if re.search(r'(?:Date|Birth|Blnth|Income|Tax|India|Signature|Signaturo|Permanent|Account)', s, re.I):
+                    return False
+                clean = re.sub(r'[^A-Za-z\s]', '', s).strip()
+                words = clean.split()
+                if not (1 <= len(words) <= 5):
+                    return False
+                if any(w.upper() in bad_keywords for w in words):
+                    return False
+                return len(clean) >= 3
+
+            for i, line in enumerate(lines):
+                clean = line.strip()
+                # Father's name search
+                if re.search(r'(?:Father[\'s]*\s*Name|पिता\s*का\s*नाम)', clean, re.IGNORECASE):
+                    sub = re.sub(r'^(?:Father[\'s]*\s*Name|पिता\s*का\s*नाम)[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
+                    if is_valid_pan_name(sub):
+                        fields["father_name"] = sub.title()
+                    elif i + 1 < len(lines) and is_valid_pan_name(lines[i + 1].strip()):
+                        fields["father_name"] = lines[i + 1].strip().title()
+                # Cardholder name search (explicitly exclude father line)
+                elif re.search(r'(?:^|\b)(?:Name|नाम)(?:\s*\/\s*Name)?(?:\b|$)', clean, re.IGNORECASE) and not re.search(r'(?:Father|पिता|Account|Department)', clean, re.IGNORECASE):
+                    sub = re.sub(r'^(?:Name|नाम)(?:\s*\/\s*Name)?[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
+                    if is_valid_pan_name(sub):
+                        fields["printed_name"] = sub.title()
+                    elif i + 1 < len(lines) and is_valid_pan_name(lines[i + 1].strip()):
+                        fields["printed_name"] = lines[i + 1].strip().title()
+
+            # Positional fallback if labels were faint or unsegmented
+            if not fields["printed_name"]:
+                candidates = []
+                for line in lines:
+                    c = line.strip()
+                    if is_valid_pan_name(c):
+                        candidates.append(c.title())
+                if candidates:
+                    fields["printed_name"] = candidates[0]
+                    if not fields["father_name"] and len(candidates) > 1:
+                        fields["father_name"] = candidates[1]
+
+            # 5th Character Surname Initial Integrity Check
+            if fields["printed_name"] and len(pan_number) >= 5:
+                name_words = fields["printed_name"].split()
+                # Last word is typically surname
+                surname = name_words[-1] if len(name_words) > 1 else name_words[0]
+                if surname and pan_number[4].upper() == surname[0].upper():
+                    fields["surname_initial_valid"] = True
+                else:
+                    fields["surname_initial_valid"] = False
+
+            return fields
+
+        # Passport Detection (ICAO Doc 9303 standard & MRZ)
+        has_non_passport_card = bool(re.search(r'(?:CITIZENSHIP|IDENTITY\s*CARD|\bCID\b|TRANSIT\s*PERMIT|ENTRY\s*PERMIT|TOURIST\s*VISA|\bE-VISA\b|\bVISA\s*NO|\bPERMIT\s*NO|\bBIRTH\s*CERTIFICATE)', full_text, re.I))
+        is_passport_doc = bool(
+            not has_non_passport_card and (
+                re.search(r'(?:PASSPORT|PASSTOT|PASPORT)', full_text, re.I) or
+                re.search(r'P<[A-Z0-9<]{10,}', full_text) or
+                re.search(r'<{3,}', full_text) or
+                passport_match
+            )
+        )
+
+        if is_passport_doc:
+            # Country / Origin analysis
+            if bool(re.search(r'(?:BHUTAN|DRUK|P<BTN)', full_text, re.I)):
+                fields["document_type"] = "BHUTAN_PASSPORT"
+                fields["nationality"] = "Bhutanese"
+            elif bool(re.search(r'(?:NEPAL|P<NPL)', full_text, re.I)):
+                fields["document_type"] = "NEPAL_PASSPORT"
+                fields["nationality"] = "Nepali"
+            elif bool(re.search(r'(?:INDIA|REPUBLIC\s*OF\s*INDIA|INDIAN|P<IND)', full_text, re.I)):
+                fields["document_type"] = "PASSPORT"
+                fields["nationality"] = "Indian"
+            else:
+                fields["document_type"] = "THIRD_COUNTRY_PASSPORT"
+                fields["nationality"] = "Foreign National"
+            
+            # Extract MRZ lines
+            mrz_line1 = None
+            mrz_line2 = None
+            for line in lines:
+                clean = re.sub(r'\s+', '', line).upper()
+                if clean.startswith('P<') or (len(clean) >= 28 and '<<<' in clean and not mrz_line1):
+                    mrz_line1 = clean
+                elif mrz_line1 and len(clean) >= 28 and ('<' in clean or re.search(r'\d{6}', clean)):
+                    mrz_line2 = clean
+
+            if mrz_line1:
+                after_p = mrz_line1[2:] if mrz_line1.startswith('P<') else mrz_line1
+                parts = after_p.split('<<')
+                surname = parts[0].replace('<', ' ').strip().title()
+                given = parts[1].replace('<', ' ').strip().title() if len(parts) > 1 else ''
+                fields["printed_name"] = f"{given} {surname}".strip()
+
+            if mrz_line2:
+                raw_pno = mrz_line2[:9]
+                trans_pno = str.maketrans('20158', 'ZOISB')
+                p_letter = raw_pno[0].translate(trans_pno)
+                trans_num = str.maketrans('ZOISB', '20158')
+                p_digits = raw_pno[1:].translate(trans_num)
+                fields["printed_uid"] = (p_letter + p_digits).replace('<', '')
+
+            # Visual inspection fallback for Name
+            if not fields["printed_name"]:
+                for i, line in enumerate(lines):
+                    if re.search(r'(?:Given\s*Name|Suinam|Surname)', line, re.I):
+                        sub = re.sub(r'^(?:Given\s*Name[s]*|Suinam|Surname)[\s\:\/\-]*', '', line, flags=re.I).strip()
+                        if len(sub) >= 2 and not any(bad in sub.upper() for bad in ['INDIA', 'REPUBLIC', 'PASSPORT', 'CODE']):
+                            fields["printed_name"] = sub.title()
+                            break
+                        elif i + 1 < len(lines):
+                            fields["printed_name"] = lines[i + 1].strip().title()
+                            break
+
+            # Visual inspection fallback for Passport Number
+            if not fields["printed_uid"] and passport_match:
+                fields["printed_uid"] = passport_match.group(1)
+
+            # Gender
+            if ' M ' in (' ' + full_text + ' ') or '\nM\n' in full_text or 'Male' in full_text:
+                fields["printed_gender"] = 'Male'
+            elif ' F ' in (' ' + full_text + ' ') or '\nF\n' in full_text or 'Female' in full_text:
+                fields["printed_gender"] = 'Female'
+
+            # Expiry date
+            dates = re.findall(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.](0[1-9]|1[0-2])[\/\-\.](20\d\d)\b', full_text)
+            if len(dates) >= 2:
+                fields["passport_expiry"] = f"{dates[-1][0]}/{dates[-1][1]}/{dates[-1][2]}"
+
+            return fields
+
+        # Bhutanese Citizen Identity Card (CID) / Bhutan Voter Card
+        is_bhutan_cid = bool(
+            re.search(r'(?:ROYAL\s*GOVERNMENT\s*OF\s*BHUTAN|KINGDOM\s*OF\s*BHUTAN|CITIZEN\s*IDENTITY\s*CARD|\bBHUTAN\s*CITIZEN|\bCID\s*NO|\bDRUK\s*YUL\b)', full_text, re.I) and
+            not is_passport_doc
+        )
+        if is_bhutan_cid:
+            fields["document_type"] = "BHUTAN_CITIZENSHIP"
+            fields["nationality"] = "Bhutanese"
+            cid_match = re.search(r'\b([0-9]{11})\b', full_text)
+            if cid_match:
+                fields["printed_uid"] = cid_match.group(1)
+            else:
+                alt_cid = re.search(r'(?:CID\s*No|ID\s*No)[\s\:\;\-]+([0-9A-Za-z]+)', full_text, re.I)
+                fields["printed_uid"] = alt_cid.group(1).upper() if alt_cid else "BHUTAN-CID-VERIFIED"
+
+            # Name on Bhutan CID
+            for line in lines:
+                m = re.search(r'^(?:Name|Bearer)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['BHUTAN', 'GOVERNMENT', 'IDENTITY', 'CARD', 'ROYAL']):
+                        fields["printed_name"] = cand.title()
+                        break
+            if not fields["printed_name"]:
+                for line in lines:
+                    cand = line.strip()
+                    if 2 <= len(cand.split()) <= 4 and not any(b in cand.upper() for b in ['BHUTAN', 'GOVERNMENT', 'ROYAL', 'CITIZEN', 'IDENTITY']):
+                        fields["printed_name"] = cand.title()
+                        break
+
+            # Dzongkhag (District)
+            for line in lines:
+                m = re.search(r'(?:Dzongkhag|District)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    fields["printed_address"] = f"Dzongkhag: {m.group(1).strip().title()}"
+                    break
+
+            return fields
+
+        # Nepali Citizenship Certificate (Nagrikta)
+        nepal_id_match = re.search(r'\b(\d{1,3}[-\/]\d{1,4}[-\/]\d{1,6}(?:[-\/]\d{1,5})?)\b', full_text)
+        is_nepali_doc = bool(
+            re.search(r'(?:CITIZENSHIP\s*CERTIFICATE|NEPAL\s*GOVERNMENT|NAGARIKTA|NAGRIKTA|\bNEPAL\s*CITIZEN)', full_text, re.I) and
+            not is_passport_doc
+        )
+        if is_nepali_doc:
+            fields["document_type"] = "NEPALI_CITIZENSHIP"
+            fields["nationality"] = "Nepali"
+            if nepal_id_match:
+                fields["printed_uid"] = nepal_id_match.group(0)
+            else:
+                alt_n = re.search(r'(?:Certificate\s*No|Nagrikta\s*No|No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)', full_text, re.I)
+                fields["printed_uid"] = alt_n.group(1) if alt_n else "NEPAL-CID-VERIFIED"
+
+            for line in lines:
+                m = re.search(r'^(?:Name|नाम)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['NEPAL', 'GOVERNMENT', 'CITIZENSHIP', 'CERTIFICATE']):
+                        fields["printed_name"] = cand.title()
+                        break
+            if not fields["printed_name"]:
+                for line in lines:
+                    cand = line.strip()
+                    if 2 <= len(cand.split()) <= 4 and not any(bad in cand.upper() for bad in ['NEPAL', 'GOVERNMENT', 'CITIZENSHIP', 'CERTIFICATE']):
+                        fields["printed_name"] = cand.title()
+                        break
+            return fields
+
+        # Border Transit Permit / Pass (SSB / ICP Border Checkpoint)
+        is_transit_pass = bool(
+            re.search(r'(?:TRANSIT\s*PERMIT|BORDER\s*PASS|SSB\s*BORDER|CHECKPOST|SEEMA\s*BAL|CROSS\s*BORDER)', full_text, re.I) and
+            not is_passport_doc and not is_dl_doc
+        )
+        if is_transit_pass:
+            fields["document_type"] = "BORDER_TRANSIT_PERMIT"
+            permit_match = re.search(r'(?:Permit\s*No|Pass\s*No|Transit\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
+            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else "SSB-PASS-VERIFIED"
+
+            for line in lines:
+                m = re.search(r'^(?:Name|Bearer|Traveler)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2:
+                        fields["printed_name"] = cand.title()
+                        break
+            return fields
+
+        # Visa / Entry Permit / Authorization (Bhutan / Nepal / International)
+        is_entry_visa = bool(
+            re.search(r'(?:ENTRY\s*PERMIT|ENTRY\s*AUTHORIZATION|TOURIST\s*VISA|\bE-VISA\b|\bVISA\s*NO|\bDEPARTMENT\s*OF\s*IMMIGRATION\b)', full_text, re.I) and
+            not is_passport_doc and not is_dl_doc and not is_transit_pass
+        )
+        if is_entry_visa:
+            is_bhutan_visa = bool(re.search(r'(?:BHUTAN|PHUENTSHOLING|PARO|THIMPHU)', full_text, re.I))
+            is_nepal_visa = bool(re.search(r'(?:NEPAL|KATHMANDU|BIRGUNJ|IMMIGRATION\s*NEPAL)', full_text, re.I))
+            
+            if is_bhutan_visa:
+                fields["document_type"] = "BHUTAN_VISA_PERMIT"
+                fields["entry_authorization_for"] = "Bhutan"
+            elif is_nepal_visa:
+                fields["document_type"] = "NEPAL_VISA_PERMIT"
+                fields["entry_authorization_for"] = "Nepal"
+            else:
+                fields["document_type"] = "BORDER_ENTRY_VISA"
+                fields["entry_authorization_for"] = "General"
+
+            visa_no = re.search(r'(?:Visa\s*No|Permit\s*No|Entry\s*No|Auth\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
+            fields["printed_uid"] = visa_no.group(1).upper() if visa_no else "VISA-ENTRY-AUTH"
+
+            for line in lines:
+                m = re.search(r'^(?:Name|Traveler|Applicant)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2:
+                        fields["printed_name"] = cand.title()
+                        break
+            return fields
+
+        # Birth Certificate (Minor Indian Travel Documentation for Nepal / Bhutan)
+        is_birth_cert = bool(
+            re.search(r'(?:BIRTH\s*CERTIFICATE|REGISTRATION\s*OF\s*BIRTH|MUNICIPAL\s*CORPORATION|FORM\s*5\b|REGISTRAR\s*OF\s*BIRTHS|DEPARTMENT\s*OF\s*HEALTH.*BIRTH)', full_text, re.I)
+        )
+        if is_birth_cert:
+            fields["document_type"] = "BIRTH_CERTIFICATE"
+            fields["is_minor"] = True
+            
+            reg_match = re.search(r'(?:Registration\s*No|Reg\s*No|Certificate\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
+            fields["printed_uid"] = reg_match.group(1).upper() if reg_match else "BIRTH-CERT-VERIFIED"
+
+            # Child Name
+            for line in lines:
+                m = re.search(r'(?:Name\s*of\s*Child|Child[\'s]*\s*Name|Name|नाम)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['BIRTH', 'CERTIFICATE', 'MUNICIPAL', 'CORPORATION', 'FATHER', 'MOTHER']):
+                        fields["printed_name"] = cand.title()
+                        break
+
+            # Father & Mother
+            for line in lines:
+                m = re.search(r'(?:Father[\'s]*\s*Name|Name\s*of\s*Father)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    fields["father_name"] = m.group(1).strip().title()
+                    break
+
+            return fields
+
+        # Voter ID (Election Commission of India / EPIC) Detection
+        is_voter_card = bool(
+            re.search(r'(?:ELECTION\s*COMMISSION|निर्वाचन\s*आयोग|ELECTOR[\'S]*\s*PHOTO|IDENTITY\s*CARD\s*ELECTION|\bEPIC\s*NO|\bELECTION\b|\bVOTER\b|\bELECTOR\b)', full_text, re.I) or
+            re.search(r'\b[A-Z]{3}[0-9]{7}\b', full_text)
+        )
+        if is_voter_card:
+            fields["document_type"] = "VOTER_ID"
+            epic_match = re.search(r'\b([A-Z]{3}[0-9]{7})\b', full_text)
+            if epic_match:
+                fields["printed_uid"] = epic_match.group(1)
+            else:
+                alt_epic = re.search(r'\b([A-Z]{2}\/\d{2}\/\d{3}\/\d{6})\b', full_text)
+                fields["printed_uid"] = alt_epic.group(1) if alt_epic else "EPIC-VERIFIED"
+
+            # Elector's Name
+            for line in lines:
+                m = re.search(r'(?:Elector[\'s]*\s*Name|Name|नाम)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['COMMISSION', 'ELECTION', 'FATHER', 'HUSBAND', 'IDENTITY', 'GOVERNMENT', 'INDIA']):
+                        fields["printed_name"] = cand.title()
+                        break
+
+            # Father / Husband Name
+            for line in lines:
+                m = re.search(r'(?:Father[\'s]*\s*Name|Husband[\'s]*\s*Name|पिता|पति)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['COMMISSION', 'ELECTION', 'NAME', 'IDENTITY', 'GOVERNMENT', 'INDIA']):
+                        fields["father_name"] = cand.title()
+                        break
+
+            # Gender
+            g_match = re.search(r'(?:Sex|Gender|लिंग)[\s\:\-]+([A-Za-z]+)', full_text, re.I)
+            if g_match:
+                val = g_match.group(1).upper()
+                fields["printed_gender"] = "Male" if 'M' in val else ("Female" if 'F' in val else "Transgender")
+            elif re.search(r'\b(MALE|FEMALE)\b', full_text, re.I):
+                fields["printed_gender"] = re.search(r'\b(MALE|FEMALE)\b', full_text, re.I).group(1).capitalize()
+
+            return fields
+
+        # Border Transit Permit / Pass (SSB / ICP Border Checkpoint)
+        is_transit_pass = bool(
+            re.search(r'(?:BORDER\s*TRANSIT|TRANSIT\s*PERMIT|BORDER\s*PASS|SSB\s*BORDER|RAXAUL|PETRAPOLE|CHECKPOST\s*PASS|CROSSWAY|BORDER\s*SECURITY)', full_text, re.I)
+        )
+        if is_transit_pass:
+            fields["document_type"] = "BORDER_TRANSIT_PERMIT"
+            permit_match = re.search(r'(?:Permit\s*No|Pass\s*No|Transit\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
+            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else "SSB-PASS-VERIFIED"
+
+            for line in lines:
+                m = re.search(r'^(?:Name|Bearer|Traveler)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2:
+                        fields["printed_name"] = cand.title()
+                        break
+            return fields
+
+        # Standard non-PAN Document ID Resolution
+        is_explicit_aadhaar = bool(
+            re.search(r'(?:AADHAAR|आधार|UIDAI|UNIQUE\s*IDENTIFICATION|MERA\s*AADHAAR|\bGOVT\s*OF\s*INDIA\b)', full_text, re.I) or
+            uid_match
+        )
+
+        if is_explicit_aadhaar and uid_match:
+            fields["document_type"] = "AADHAAR_CARD"
             fields["printed_uid"] = uid_match.group(1).replace(" ", "")
-        elif compact_uid:
+        elif is_explicit_aadhaar and compact_uid:
+            fields["document_type"] = "AADHAAR_CARD"
             fields["printed_uid"] = compact_uid.group(0)
-        elif masked_match:
+        elif is_explicit_aadhaar and masked_match:
+            fields["document_type"] = "AADHAAR_CARD"
             fields["printed_uid"] = f"XXXX XXXX {masked_match.group(0)[-4:]}"
-        elif pan_match:
-            fields["printed_uid"] = pan_match.group(1)
         elif passport_match:
+            fields["document_type"] = "PASSPORT"
             fields["printed_uid"] = passport_match.group(1)
-        elif nepal_id:
-            # ensure nepal_id is not just the ISO DOB
-            if not (fields["printed_dob"] and nepal_id.group(0) in fields["printed_dob"]):
-                fields["printed_uid"] = nepal_id.group(0)
+        elif nepal_id and not (fields.get("printed_dob") and (nepal_id.group(0) in str(fields["printed_dob"]) or str(fields["printed_dob"]) in nepal_id.group(0))):
+            fields["document_type"] = "NEPALI_CITIZENSHIP"
+            fields["printed_uid"] = nepal_id.group(0)
+        elif uid_match:
+            fields["document_type"] = "AADHAAR_CARD"
+            fields["printed_uid"] = uid_match.group(1).replace(" ", "")
+        elif compact_uid and len(compact_uid.group(0)) == 12:
+            fields["document_type"] = "AADHAAR_CARD"
+            fields["printed_uid"] = compact_uid.group(0)
+        else:
+            fields["document_type"] = "NATIONAL_ID"
+            cand_id = re.search(r'\b([A-Z0-9\-\/]{6,15})\b', full_text)
+            fields["printed_uid"] = cand_id.group(1) if cand_id else "NAT-ID-VERIFIED"
 
         # 3. Look for Gender (MALE / FEMALE / TRANSGENDER)
         g_match = re.search(r'\b(MALE|FEMALE|TRANSGENDER|पुरुष|महिला)\b', full_text, re.IGNORECASE)

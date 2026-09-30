@@ -12,13 +12,15 @@ export default function NewScreeningPage() {
   const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
 
-  const handleStartScreening = async ({ documentFile, selfieFile, documentType, demoScenario }) => {
+  const handleStartScreening = async ({ documentFile, backSideFile, selfieFile, documentType, borderCorridor, demoScenario }) => {
     try {
       setLoading(true);
       const response = await uploadScreening({
         documentFile,
+        backSideFile,
         selfieFile,
         documentType,
+        borderCorridor,
         demoScenario
       });
 

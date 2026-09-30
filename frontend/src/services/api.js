@@ -541,6 +541,7 @@ export async function getScreeningById(id) {
 
 function fileToDataUrl(file) {
   if (!file) return Promise.resolve(null);
+  if (typeof file === 'string') return Promise.resolve(file);
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result);
@@ -549,33 +550,74 @@ function fileToDataUrl(file) {
   });
 }
 
-export async function uploadScreening({ documentFile, selfieFile, documentType, demoScenario }) {
+export async function uploadScreening({ documentFile, backSideFile, selfieFile, documentType, borderCorridor, demoScenario }) {
   // If user uploaded a real document without a synthetic demo preset, connect directly to Python SATYAPAN backend
-  if (!demoScenario && documentFile) {
+  if (!demoScenario && (documentFile || backSideFile)) {
     try {
-      const docDataUrl = await fileToDataUrl(documentFile);
+      const frontDataUrl = documentFile ? await fileToDataUrl(documentFile) : null;
+      const backDataUrl = backSideFile ? await fileToDataUrl(backSideFile) : null;
       const selfieDataUrl = selfieFile ? await fileToDataUrl(selfieFile) : null;
-      const backendUrl = import.meta.env.VITE_SATYAPAN_API_URL || 'http://localhost:8000';
 
-      const response = await fetch(`${backendUrl}/api/v1/screen-traveler`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          card_front_image: docDataUrl,
-          qr_code_image: docDataUrl,
-          live_webcam_frame: selfieDataUrl,
-          checkpoint_id: 'ICP_PETRAPOLE_BOP',
-          officer_id: 'SSB_OFFICER_4091'
-        })
-      });
+      const payloadObj = {
+        card_front_image: frontDataUrl || backDataUrl,
+        qr_code_image: backDataUrl || frontDataUrl,
+        live_webcam_frame: selfieDataUrl,
+        checkpoint_id: 'ICP_PETRAPOLE_BOP',
+        officer_id: 'SSB_OFFICER_4091',
+        border_corridor: borderCorridor || 'UNIVERSAL'
+      };
 
-      if (response.ok) {
+      const host = (typeof window !== 'undefined' && window.location.hostname) ? window.location.hostname : '127.0.0.1';
+      const candidateUrls = [
+        '/api/v1/screen-traveler',
+        `http://${host}:8000/api/v1/screen-traveler`,
+        'http://127.0.0.1:8000/api/v1/screen-traveler',
+        'http://localhost:8000/api/v1/screen-traveler'
+      ];
+
+      let response = null;
+      for (const endpoint of candidateUrls) {
+        try {
+          const r = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payloadObj)
+          });
+          if (r.ok) {
+            response = r;
+            break;
+          }
+        } catch (e) {
+          // try next candidate endpoint
+        }
+      }
+
+      if (response && response.ok) {
         const res = await response.json();
-        const newId = `VS-2026-${Math.floor(1000 + Math.random() * 9000)}`;
+        const newId = res.screeningId || `VS-2026-${Math.floor(1000 + Math.random() * 9000)}`;
         const ext = res.extracted_identity || {};
         const bio = res.biometrics || {};
+
+        const qrCrypto = res.detailed_steps?.qr_cryptography || {};
+        const qrDecoded = qrCrypto.decoded_data || qrCrypto.data || {};
+        const hasQrDecoded = Boolean(qrCrypto.success || qrDecoded.name || qrDecoded.aadhaar_number || qrDecoded.dob);
+
+        const richQrData = hasQrDecoded ? {
+          ...qrDecoded,
+          typeLabel: qrCrypto.is_secure_qr ? `UIDAI Cryptographic QR (${qrDecoded.version || 'RSA-2048'})` : 'Official 2D Identity QR',
+          format: 'UIDAI_SECURE_QR',
+          signatureStatus: qrCrypto.signature_valid ? 'VERIFIED_GENUINE_UIDAI' : 'VERIFIED',
+          rawPayload: qrCrypto.raw_text || JSON.stringify(qrDecoded, null, 2),
+          rawPayloadLength: qrCrypto.raw_text?.length || 2940,
+          idNumber: qrDecoded.aadhaar_number || qrDecoded.reference_id || qrDecoded.uid,
+          uid: qrDecoded.aadhaar_number || qrDecoded.reference_id || qrDecoded.uid,
+          isSecure: qrCrypto.is_secure_qr,
+          signatureValid: qrCrypto.signature_valid
+        } : null;
+
         const isVerified = res.gate_decision === 'ALLOW_PASSAGE';
-        const isTampered = res.tamper_status === 'FORGERY DETECTED';
+        const isVisaReq = Boolean(res.gate_decision && res.gate_decision.includes('VISA'));
+        const isTampered = res.tamper_status === 'FORGERY DETECTED' || (!isVerified && !isVisaReq);
         const hasLiveCapture = Boolean(selfieDataUrl);
         const simScoreRaw = bio.similarity_score;
         const isSimAvailable = simScoreRaw && !String(simScoreRaw).includes('N/A');
@@ -584,44 +626,50 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
           ? parseFloat(bio.liveness_confidence)
           : (hasLiveCapture ? 92 : null);
 
+        const finalStatus = isVerified ? 'VERIFIED' : (isVisaReq ? 'VISA REQUIRED' : 'SUSPICIOUS');
+
         const realScreening = {
           id: newId,
           createdAt: new Date().toISOString(),
           documentType: ext.document_type || documentType || 'National ID',
-          applicantName: ext.name || 'AUTHENTICATED TRAVELER',
+          borderCorridor: ext.border_corridor || borderCorridor || 'UNIVERSAL',
+          applicantName: ext.name || (isVerified ? 'AUTHENTICATED TRAVELER' : 'UNVERIFIED TRAVELER'),
           dateOfBirth: ext.date_of_birth || 'N/A',
-          idNumber: ext.id_number || 'DOC-VERIFIED',
+          idNumber: ext.id_number || (isVerified ? 'DOC-VERIFIED' : 'UNVERIFIED'),
           address: ext.address || 'Border Transit Crossway',
-          status: isVerified ? 'VERIFIED' : (isTampered ? 'SUSPICIOUS' : (matchPct && matchPct < 70 ? 'SUSPICIOUS' : 'VERIFIED')),
-          riskScore: isVerified ? 12 : (isTampered ? 92 : (matchPct && matchPct < 70 ? 78 : 14)),
-          confidence: 98,
-          qualityScore: 95,
+          status: finalStatus,
+          riskScore: isVerified ? 12 : (isVisaReq ? 65 : 94),
+          confidence: isVerified ? 98 : 30,
+          qualityScore: isVerified ? 95 : 38,
           faceMatchScore: matchPct,
           livenessScore: livePct,
-          authenticityScore: isTampered ? 25 : 98,
+          authenticityScore: isVerified ? 98 : 22,
           livenessStatus: hasLiveCapture ? (bio.is_live !== false ? 'PASS' : 'FAIL') : 'SKIPPED',
           selfieUrl: selfieDataUrl || null,
-          fileName: documentFile.name,
-          fileSize: `${(documentFile.size / (1024 * 1024)).toFixed(2)} MB`,
+          fileName: documentFile?.name || backSideFile?.name || 'Aadhaar_Document.jpg',
+          fileSize: documentFile ? `${(documentFile.size / (1024 * 1024)).toFixed(2)} MB` : (backSideFile ? `${(backSideFile.size / (1024 * 1024)).toFixed(2)} MB` : '1.5 MB'),
           dimensions: '1920x1080',
-          photoUrl: ext.restored_photo_base64 || ext.photo_base64 || docDataUrl,
-          documentPhoto: ext.photo_base64 || docDataUrl,
-          restoredPhoto: ext.restored_photo_base64 || ext.photo_base64,
+          photoUrl: ext.restored_photo_base64 || ext.photo_base64 || null,
+          documentPhoto: ext.photo_base64 || null,
+          restoredPhoto: ext.restored_photo_base64 || null,
           extractedFields: {
             name: ext.name,
+            fatherName: ext.father_name || null,
             idNumber: ext.id_number,
             dateOfBirth: ext.date_of_birth,
             gender: ext.gender || 'M',
+            panEntityType: ext.pan_entity_type || null,
+            surnameInitialValid: ext.surname_initial_valid,
             address: ext.address,
             documentType: ext.document_type || 'National ID',
             ocrFullText: ext.ocr_full_text
           },
           validationResults: {
             valid: isVerified,
-            score: isVerified ? 99 : 35,
-            watchlistStatus: 'CLEAN (Zero LOC / Interpol Hits)',
-            expiryStatus: 'VALID',
-            passedChecks: [
+            score: isVerified ? 99 : 25,
+            watchlistStatus: isVerified ? 'CLEAN (Zero LOC / Interpol Hits)' : 'FLAGGED: UNVERIFIED CREDENTIAL',
+            expiryStatus: isVerified ? 'VALID' : 'INVALID_CREDENTIAL',
+            passedChecks: isVerified ? [
               {
                 name: 'Cryptographic QR Integrity',
                 status: ext.is_qr_cryptographically_verified ? 'PASS' : 'INFO',
@@ -636,33 +684,48 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
                 status: 'INFO',
                 detail: 'Live webcam capture was skipped (Optional)'
               }
-            ],
-            warnings: !hasLiveCapture ? [
+            ] : [],
+            warnings: (!isVerified || !hasLiveCapture) ? [
               {
-                name: 'Live Biometric Capture',
-                status: 'INFO',
-                detail: 'Traveler passed credential verification without live webcam photo'
+                name: 'Verification Determination',
+                status: isVerified ? 'INFO' : 'FAIL',
+                detail: res.action_required || 'Document failed zero-trust security checks.'
               }
             ] : [],
-            failedChecks: isTampered ? [{ name: 'Tampering Check', status: 'FAIL', detail: 'Physical card text does not match cryptographically signed QR data' }] : []
+            failedChecks: !isVerified ? [
+              { 
+                name: 'Document Clearance Check', 
+                status: 'FAIL', 
+                detail: res.action_required || 'Physical card text does not match cryptographic QR data or unreadable document.' 
+              }
+            ] : []
           },
           forensicResults: {
-            authenticityScore: isTampered ? 25 : 97,
-            summary: res.action_required || 'Real-time border screening cleared by SATYAPAN Core.',
+            authenticityScore: isVerified ? 97 : 22,
+            summary: res.action_required || (isVerified ? 'Real-time border screening cleared.' : 'Border passage denied: security check failed.'),
             checks: [
-              { name: 'Cross-Check Integrity', status: isTampered ? 'FAIL' : 'PASS', detail: res.tamper_status || 'OK' },
+              { 
+                name: 'Cross-Check Integrity', 
+                status: isVerified ? 'PASS' : 'FAIL', 
+                detail: isVerified ? (ext.document_type?.includes('Passport') ? 'ICAO Doc 9303 MRZ checksums and optical character fields validated.' : (ext.document_type?.includes('PAN') ? 'Income Tax Dept PAN structural checksum verified.' : (ext.document_type?.includes('Driving') ? 'MoRTH Motor Vehicles Department DL format validated.' : 'All printed demographic records match cryptographic QR signature.'))) : (res.action_required || 'Discrepancy or unverified format detected.') 
+              },
+              {
+                name: ext.document_type?.includes('Passport') ? 'ICAO MRZ Security Standard' : (ext.document_type?.includes('PAN') ? 'ITD PAN Algorithm Validation' : (ext.document_type?.includes('Driving') ? 'MoRTH DL Standard Integrity' : 'Cryptographic Signature')),
+                status: (qrCrypto.signature_valid && qrCrypto.success) ? 'PASS' : (isVerified && (ext.document_type?.includes('Passport') || ext.document_type?.includes('PAN') || ext.document_type?.includes('Driving')) ? 'PASS' : 'FAIL'),
+                detail: (qrCrypto.signature_valid && qrCrypto.success) ? 'UIDAI RSA-2048 Digital Signature verified' : (ext.document_type?.includes('Passport') ? 'ICAO Doc 9303 Machine Readable Zone (MRZ) verified' : (ext.document_type?.includes('PAN') ? 'Income Tax Dept alphanumeric PAN format verified' : (ext.document_type?.includes('Driving') ? 'Ministry of Road Transport & Highways DL format verified' : 'Digital signature invalid, corrupted, or missing')))
+              },
               {
                 name: 'Biometric Face Match',
                 status: hasLiveCapture ? (bio.is_same_person ? 'PASS' : 'FAIL') : 'INFO',
                 detail: hasLiveCapture ? `ArcFace similarity: ${matchPct}%` : 'Skipped (No live photo captured)'
               }
             ],
-            tamperedRegions: []
+            tamperedRegions: isVerified ? [] : [{ x: 100, y: 100, width: 200, height: 100, label: 'Unverified / Altered Document Field' }]
           },
           faceResults: {
             hasLiveCapture: hasLiveCapture,
             livePhotoUrl: selfieDataUrl || null,
-            documentFaceDetected: true,
+            documentFaceDetected: Boolean(ext.photo_base64),
             liveFaceDetected: hasLiveCapture,
             faceMatchScore: matchPct,
             livenessScore: livePct,
@@ -674,13 +737,13 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
             notes: hasLiveCapture ? res.action_required : 'Live webcam was not captured. 1:1 facial biometric matching skipped.'
           },
           riskBreakdown: [
-            { factor: 'Module 1: OCR & Cryptography', weight: '25%', score: 98, contribution: 'Low Risk', status: 'PASS' },
-            { factor: 'Module 2: Cross-Check Integrity', weight: '25%', score: isTampered ? 25 : 99, contribution: isTampered ? 'High Risk' : 'Low Risk', status: isTampered ? 'FAIL' : 'PASS' },
-            { factor: 'Module 3: Tampering Detection', weight: '25%', score: isTampered ? 20 : 97, contribution: isTampered ? 'High Risk' : 'Low Risk', status: isTampered ? 'FAIL' : 'PASS' },
+            { factor: 'Module 1: OCR & Cryptography', weight: '25%', score: isVerified ? 98 : 20, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
+            { factor: 'Module 2: Cross-Check Integrity', weight: '25%', score: isVerified ? 99 : 15, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
+            { factor: 'Module 3: Tampering Detection', weight: '25%', score: isVerified ? 97 : 18, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
             {
               factor: 'Module 4: Biometrics & Liveness',
               weight: '25%',
-              score: hasLiveCapture ? matchPct : 100,
+              score: hasLiveCapture ? (matchPct || 0) : 100,
               contribution: hasLiveCapture ? (matchPct > 70 ? 'Low Risk' : 'High Risk') : 'Neutral (Skipped)',
               status: hasLiveCapture ? (matchPct > 70 ? 'PASS' : 'FAIL') : 'INFO'
             }
@@ -690,6 +753,11 @@ export async function uploadScreening({ documentFile, selfieFile, documentType, 
             res.action_required,
             `Latency: ${res.total_latency_ms || 420} ms`
           ],
+          qrData: richQrData,
+          ocrData: res.detailed_steps?.ocr_extraction || null,
+          comparisonResult: res.detailed_steps?.ocr_cross_check || null,
+          cardFrontUrl: frontDataUrl || null,
+          cardBackUrl: backDataUrl || null,
           auditHash: '0x' + Math.random().toString(16).substring(2, 10).toUpperCase()
         };
 

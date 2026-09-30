@@ -147,6 +147,15 @@ export default function ExtractedDataCard({
         fullWidth: true
       }
     ];
+
+    if (extractedFields.fatherName) {
+      fields.splice(1, 0, {
+        label: "Father / Guardian / Spouse Name",
+        value: extractedFields.fatherName,
+        icon: User,
+        confidence: `${confidence}%`
+      });
+    }
   }
 
   return (

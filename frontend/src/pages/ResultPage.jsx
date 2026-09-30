@@ -185,15 +185,16 @@ export default function ResultPage() {
           compositeRisk={{
             riskScore: screening.riskScore,
             status: screening.status,
-            decisionLabel: screening.status === 'VERIFIED' ? 'GREEN — VERIFIED (Low Risk)' :
-                           screening.status === 'REVIEW_REQUIRED' ? 'AMBER — MANUAL REVIEW REQUIRED' :
-                           'RED — SUSPICIOUS / TAMPERED',
+            decisionLabel: screening.status === 'VERIFIED' ? 'GREEN — VERIFIED (Passenger Allowed)' :
+                           screening.status === 'REVIEW_REQUIRED' ? 'AMBER — MANUAL REVIEW REQUIRED (Passage On Hold)' :
+                           'RED — SUSPICIOUS / TAMPERED (Passage Denied)',
             color: screening.status === 'VERIFIED' ? 'emerald' : screening.status === 'REVIEW_REQUIRED' ? 'amber' : 'rose',
             reasons: screening.reasons || [
               'Demographic cross-verification evaluated against document records'
             ]
           }}
-          documentSnapshot={screening.fileUrl}
+          documentSnapshot={screening.cardFrontUrl || screening.documentPhoto || screening.fileUrl}
+          qrSnapshot={screening.cardBackUrl || screening.qrSnapshot || screening.photoUrl}
           sessionId={screening.id}
           timestamp={screening.createdAt}
         />

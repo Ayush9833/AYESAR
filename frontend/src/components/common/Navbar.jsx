@@ -5,7 +5,6 @@ import {
   Shield, 
   PlusCircle, 
   QrCode, 
-  Camera,
   X, 
   Copy, 
   Check, 
@@ -74,27 +73,18 @@ export default function Navbar({ onMenuToggle, user, onLogout }) {
           </span>
         </div>
 
-        {/* Right: Actions, Camera Option & Profile */}
+        {/* Right: Actions & Profile */}
         <div className="flex items-center gap-2 sm:gap-2.5">
-
-          {/* Green Camera Scan Button (Matches Mockup) */}
-          <button
-            onClick={() => navigate('/live-verify')}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-xs transition-all shadow-sm active:scale-95 cursor-pointer"
-            title="Camera Scan Document"
-          >
-            <Camera size={15} className="text-white stroke-[2.2]" />
-            <span>Camera Scan</span>
-          </button>
 
           {/* Quick New Screening Button */}
           {!location.pathname.startsWith('/screenings/new') && (
             <button
               onClick={() => navigate('/screenings/new')}
-              className="hidden sm:inline-flex items-center gap-2 px-3 py-1.5 bg-brand-900 hover:bg-brand-800 text-white text-xs font-semibold rounded-lg shadow-sm transition-all duration-150 cursor-pointer"
+              className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-brand-900 hover:bg-brand-800 text-white text-xs font-bold rounded-lg shadow-sm transition-all duration-150 cursor-pointer active:scale-95"
+              title="Initiate New Identity Screening"
             >
               <PlusCircle size={15} className="text-cyan-400" />
-              <span className="hidden lg:inline">New Screening</span>
+              <span>New Screening</span>
             </button>
           )}
 

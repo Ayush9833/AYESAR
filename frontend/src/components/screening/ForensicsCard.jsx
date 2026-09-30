@@ -86,6 +86,13 @@ export default function ForensicsCard({ forensicResults }) {
         </span>
       );
     }
+    if (s === 'INFO' || s === 'SKIPPED') {
+      return (
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-full">
+          <Clock size={11} /> Skipped
+        </span>
+      );
+    }
     return (
       <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
         <XCircle size={11} /> Tampered
