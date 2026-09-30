@@ -145,6 +145,60 @@ export default function ResultPage() {
         </div>
       </div>
 
+      {/* Official Border Gate Clearance Determination Banner */}
+      <div className={`p-4 sm:p-5 rounded-2xl border-2 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm ${
+        screening.status === 'VERIFIED'
+          ? 'bg-emerald-50 border-emerald-500 text-emerald-950'
+          : screening.status === 'VISA_REQUIRED' || screening.status === 'VISA REQUIRED'
+          ? 'bg-amber-50 border-amber-500 text-amber-950'
+          : screening.status === 'REVIEW_REQUIRED' || screening.status === 'REVIEW REQUIRED'
+          ? 'bg-amber-50 border-amber-500 text-amber-950'
+          : 'bg-rose-50 border-rose-500 text-rose-950'
+      }`}>
+        <div className="flex items-start sm:items-center gap-3.5">
+          <div className={`w-12 h-12 rounded-xl flex items-center justify-center shrink-0 font-bold text-white shadow-md ${
+            screening.status === 'VERIFIED' ? 'bg-emerald-600' :
+            screening.status === 'VISA_REQUIRED' || screening.status === 'VISA REQUIRED' ? 'bg-amber-600' :
+            screening.status === 'REVIEW_REQUIRED' || screening.status === 'REVIEW REQUIRED' ? 'bg-amber-600' : 'bg-rose-600'
+          }`}>
+            {screening.status === 'VERIFIED' ? <ShieldCheck size={28} /> : <ShieldAlert size={28} />}
+          </div>
+          <div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded bg-black/5 font-mono">
+                IMMIGRATION GATE DETERMINATION
+              </span>
+              <span className={`text-xs font-black px-2.5 py-0.5 rounded font-mono ${
+                screening.status === 'VERIFIED' ? 'bg-emerald-200 text-emerald-900' :
+                screening.status === 'VISA_REQUIRED' || screening.status === 'VISA REQUIRED' ? 'bg-amber-200 text-amber-900' :
+                screening.status === 'REVIEW_REQUIRED' || screening.status === 'REVIEW REQUIRED' ? 'bg-amber-200 text-amber-900' :
+                'bg-rose-200 text-rose-900'
+              }`}>
+                {screening.status === 'VERIFIED' ? 'ENTRY AUTHORIZED' : 'PASSAGE DENIED / HALT'}
+              </span>
+            </div>
+            <h3 className="text-base sm:text-lg font-black tracking-tight mt-0.5">
+              {screening.status === 'VERIFIED' 
+                ? 'CLEARED: Traveler Identity & Document Authenticated'
+                : screening.status === 'VISA_REQUIRED' || screening.status === 'VISA REQUIRED'
+                ? 'HALT: Valid Visa / Entry Authorization Mandatory'
+                : screening.status === 'REVIEW_REQUIRED' || screening.status === 'REVIEW REQUIRED'
+                ? 'ON HOLD: Anomaly Detected — Secondary Screening Mandatory'
+                : 'HALT: Document Discrepancy / Forgery Detected — Entry Denied'}
+            </h3>
+            <p className="text-xs opacity-90 mt-0.5 font-medium">
+              {screening.reasons?.[1] || screening.forensicResults?.summary || 'Zero-trust border gate protocol enforced. No traveler with unresolved anomalies may cross.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="shrink-0 self-start sm:self-auto text-right">
+          <span className="text-[10px] font-bold uppercase tracking-wider block opacity-70">Security Protocol</span>
+          <span className="text-xs font-mono font-black">MHA ZERO-TRUST RULE</span>
+        </div>
+      </div>
+
+
       {/* Critical Photo Replacement Alert Banner */}
       {(screening.photoReplacementDetected || 
         screening.forensicResults?.checks?.some(c => 

@@ -15,8 +15,8 @@ import {
 } from 'lucide-react';
 
 export default function OfficialVsScamCard({ officialVsScam, status, riskScore, documentType }) {
-  const isOfficial = status === 'VERIFIED' || riskScore <= 40;
-  const isScam = status === 'SUSPICIOUS' || riskScore > 70;
+  const isOfficial = status === 'VERIFIED' && riskScore <= 35;
+  const isScam = status === 'SUSPICIOUS' || riskScore > 65;
   const isReview = !isOfficial && !isScam;
 
   const defaultChecklist = [

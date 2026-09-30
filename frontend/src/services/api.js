@@ -808,10 +808,9 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
   } else if (demoScenario === 'verified' || demoScenario === 'passport_cleared') {
     selectedScenario = mockScreenings[0]; // Aarav Sharma (Cleared Indian Passport)
   } else if (documentFile) {
-    // Dynamically evaluate uploaded file
-    const isPassportFile = (documentType || documentFile.name || '').toLowerCase().includes('passport');
+    // Zero-Trust Rule: Unverified documents evaluated offline must NEVER be automatically cleared
     const isVisaFile = (documentType || documentFile.name || '').toLowerCase().includes('visa');
-    selectedScenario = isVisaFile ? mockScreenings[1] : isPassportFile ? mockScreenings[0] : mockScreenings[0];
+    selectedScenario = isVisaFile ? mockScreenings[1] : mockScreenings[3]; // Default to Review Required (Passage On Hold)
   }
 
   const newId = `VS-2026-${Math.floor(1000 + Math.random() * 9000)}`;

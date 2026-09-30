@@ -152,7 +152,7 @@ if __name__ == "__main__":
         "Name: ROHIT VERMA",
         "DOB: 05/09/1998",
         "Gender: Male",
-        "9876 5432 1098"
+        "9876 5432 1096"
     ], "UNIQUE IDENTIFICATION AUTHORITY OF INDIA")
     run_test("7. Aadhaar Card (Front Only)", aadhaar_front_card)
 
@@ -160,7 +160,7 @@ if __name__ == "__main__":
     bhutan_cid_card = create_sample_card([
         "ROYAL GOVERNMENT OF BHUTAN",
         "CITIZEN IDENTITY CARD",
-        "CID No: 11502001234",
+        "CID: 11502001234",
         "Name: TASHI DORJI",
         "Dzongkhag: THIMPHU",
         "DOB: 18/06/1991"

@@ -434,9 +434,10 @@ class CardOcrCrossCheckEngine:
             return fields
 
         # Bhutanese Citizen Identity Card (CID) / Bhutan Voter Card
+        is_bhutan_permit = bool(re.search(r'(?:ENTRY\s*PERMIT|ENTRY\s*AUTHORIZATION|E-VISA|\bTOURIST\s*PERMIT)', full_text, re.I))
         is_bhutan_cid = bool(
             re.search(r'(?:ROYAL\s*GOVERNMENT\s*OF\s*BHUTAN|KINGDOM\s*OF\s*BHUTAN|CITIZEN\s*IDENTITY\s*CARD|\bBHUTAN\s*CITIZEN|\bCID\s*NO|\bDRUK\s*YUL\b)', full_text, re.I) and
-            not is_passport_doc
+            not is_passport_doc and not is_bhutan_permit
         )
         if is_bhutan_cid:
             fields["document_type"] = "BHUTAN_CITIZENSHIP"

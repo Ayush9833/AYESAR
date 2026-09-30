@@ -21,8 +21,9 @@ import cv2
 import numpy as np
 import base64
 import re
+import datetime
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple, List
 from contextlib import asynccontextmanager
 from pydantic import BaseModel, Field
 from fastapi import FastAPI, HTTPException, status, Request
@@ -30,6 +31,8 @@ from fastapi.exceptions import RequestValidationError
 from starlette.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
+
+from aadhaar_crypto_verifier import VerhoeffChecksum
 
 def extract_face_from_document(image_input: Any) -> Optional[str]:
     """Detects and crops cardholder face portrait from a card document using OpenCV Haar Cascade."""
@@ -91,6 +94,55 @@ def extract_face_from_document(image_input: Any) -> Optional[str]:
     except Exception as e:
         print(f"[FACE CROP ERROR] {e}")
         return None
+
+def check_document_expiry(ocr_fields: Dict[str, Any], full_text: str) -> Tuple[bool, Optional[str]]:
+    """
+    Zero-Trust Border Security: Checks if document has expired.
+    Returns (is_expired, expiry_date_str).
+    """
+    now = datetime.date.today()
+    candidate_dates = []
+    
+    # 1. Check extracted structured fields
+    for k in ["passport_expiry", "dl_validity", "expiry_date", "valid_till"]:
+        val = ocr_fields.get(k)
+        if val and isinstance(val, str):
+            candidate_dates.append(val.strip())
+            
+    # 2. Check full text for validity patterns
+    patterns = [
+        r'(?:Valid\s*Till|Validity|Expires?|Valid\s*Until|Date\s*of\s*Expiry)[\s\:\;\-]+([0-9\/\.\-]+)',
+        r'(?:Expiry|Valid\s*Thru)[\s\:\;\-]+([0-9\/\.\-]+)'
+    ]
+    for pat in patterns:
+        for m in re.finditer(pat, full_text or "", re.I):
+            candidate_dates.append(m.group(1).strip())
+            
+    for s in candidate_dates:
+        # Check YYYY-MM-DD
+        m1 = re.search(r'(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})', s)
+        if m1:
+            y, m, d = int(m1.group(1)), int(m1.group(2)), int(m1.group(3))
+            try:
+                exp_date = datetime.date(y, m, d)
+                if exp_date < now:
+                    return True, exp_date.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+                
+        # Check DD/MM/YYYY
+        m2 = re.search(r'(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})', s)
+        if m2:
+            d, m, y = int(m2.group(1)), int(m2.group(2)), int(m2.group(3))
+            try:
+                exp_date = datetime.date(y, m, d)
+                if exp_date < now:
+                    return True, exp_date.strftime('%Y-%m-%d')
+            except ValueError:
+                pass
+                
+    return False, None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -441,15 +493,10 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
     step_results["face_match"] = face_match_res
 
     # Master Gate Decision Matrix (Zero-Trust Strict Evaluation)
-    # Check 1: OCR Text extracted
-    has_ocr_text = bool(ocr_data and len((ocr_data.get("full_text") or "").strip()) >= 10)
-    
-    # Check 2: QR Code successfully decoded
-    has_qr = bool(qr_res and qr_res.get("success"))
-    qr_sig_valid = bool(qr_res and qr_res.get("signature_valid"))
-
     ocr_fields = (ocr_data and ocr_data.get("parsed_fields")) or {}
     detected_doc_type = ocr_fields.get("document_type", "UNKNOWN")
+    full_text = (ocr_data and ocr_data.get("full_text")) or ""
+
     is_pan_card = (detected_doc_type == "PAN_CARD")
     is_passport = (detected_doc_type in ["PASSPORT", "INDIAN_PASSPORT"])
     is_bhutan_passport = (detected_doc_type == "BHUTAN_PASSPORT")
@@ -466,28 +513,26 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
     is_national_id = (detected_doc_type in ["NATIONAL_ID", "BORDER_ENTRY_VISA"])
     is_aadhaar_card = (
         detected_doc_type == "AADHAAR_CARD" or
-        "aadhaar" in (ocr_data.get("full_text") or "").lower() or
-        bool(re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', (ocr_data.get("full_text") or ""))) or
+        "aadhaar" in full_text.lower() or
+        bool(re.search(r'\b\d{4}\s\d{4}\s\d{4}\b', full_text)) or
         bool(qr_res and qr_res.get("signature_valid"))
     )
+
+    # Check 1: OCR Text extracted
+    has_ocr_text = bool(ocr_data and len(full_text.strip()) >= 10)
+    
+    # Check 2: QR Code successfully decoded
+    has_qr = bool(qr_res and qr_res.get("success"))
+    qr_sig_valid = bool(qr_res and qr_res.get("signature_valid"))
 
     # Check 3: Cross-check between physical card and cryptographic QR (when QR is present)
     is_tampered = False
     tamper_reason = None
-    if is_pan_card:
-        # PAN card structural checks
-        pan_no = ocr_fields.get("printed_uid")
-        if not pan_no or len(pan_no) != 10:
-            is_tampered = True
-            tamper_reason = "PAN Number format invalid or unreadable."
-    elif ocr_cross_res:
+    if ocr_cross_res:
         if ocr_cross_res.get("tampering_detected") or ocr_cross_res.get("is_photoshop_or_tamper_detected"):
             is_tampered = True
             flags = ocr_cross_res.get("tamper_flags") or []
             tamper_reason = "; ".join(flags) if flags else "Physical card text does not match cryptographic QR data."
-        elif ocr_cross_res.get("cross_check_status") == "INSUFFICIENT_DATA" or not ocr_cross_res.get("field_comparisons"):
-            is_tampered = True
-            tamper_reason = "Unverified credential format: Printed card details could not be authenticated against QR records."
         else:
             for comp in ocr_cross_res.get("field_comparisons", []):
                 if not comp.get("is_match", True):
@@ -495,433 +540,161 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
                     tamper_reason = f"Mismatch in {comp.get('field', 'field')}: Printed ('{comp.get('printed_text')}') != QR ('{comp.get('qr_authenticated_text')}')"
                     break
 
-    # Zero-Trust Strict Evaluation:
-    # If ANY fault is found -> REJECT / DENY PASSAGE!
-    # Only if ALL checks pass -> ALLOW PASSAGE!
+    # Check 4: Expiration Check
+    is_expired, expiry_date_str = check_document_expiry(ocr_fields, full_text)
+
+    # Check 5: Mathematical / Checksum validation
+    checksum_error = None
+    if is_pan_card:
+        pan_no = (ocr_fields.get("printed_uid") or "").strip().upper()
+        if not pan_no or not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_no):
+            checksum_error = f"PAN number '{pan_no or 'MISSING'}' does not conform to Income Tax Department alphanumeric format [A-Z]{{5}}[0-9]{{4}}[A-Z]."
+    elif is_bhutan_cid:
+        cid_no = re.sub(r'\D', '', ocr_fields.get("printed_uid") or "")
+        if len(cid_no) != 11:
+            checksum_error = f"Bhutan Citizen Identity Card number '{ocr_fields.get('printed_uid')}' is invalid (must contain exactly 11 digits under RGoB standard)."
+    elif is_aadhaar_card:
+        # Extract Aadhaar 12-digit candidates line-by-line and delimiter-safe
+        lines = full_text.splitlines()
+        aadhaar_cands = []
+        for line in lines:
+            digits_only = re.sub(r'\D', '', line)
+            if len(digits_only) == 12:
+                aadhaar_cands.append(digits_only)
+            for m in re.finditer(r'(\d{4})[\s\-\+\–]*(\d{4})[\s\-\+\–]*(\d{4})', line):
+                aadhaar_cands.append("".join(m.groups()))
+        if not aadhaar_cands:
+            digits_in_text = re.sub(r'[^0-9\n]', ' ', full_text)
+            for chunk in digits_in_text.split():
+                if len(chunk) == 12:
+                    aadhaar_cands.append(chunk)
+        
+        aadhaar_cands = list(dict.fromkeys(aadhaar_cands))
+        if aadhaar_cands:
+            valid_any = any(VerhoeffChecksum.validate(c) for c in aadhaar_cands)
+            if not valid_any:
+                bad_uid = aadhaar_cands[0]
+                formatted_uid = f"{bad_uid[:4]} {bad_uid[4:8]} {bad_uid[8:]}"
+                checksum_error = f"12-digit Aadhaar UID '{formatted_uid}' failed Verhoeff Dihedral D5 mathematical checksum. Fraudulent sequence detected."
+        elif not has_qr and not (ocr_fields.get("printed_uid") and len(ocr_fields.get("printed_uid")) >= 4):
+            checksum_error = "Aadhaar Card missing valid 12-digit UID sequence or QR security seal."
+
+    # Check 6: Bilateral Corridor Protocol Compliance
+    corridor_inadmissible = False
+    corridor_inadmissible_reason = None
+    if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
+        if is_third_country_passport and not (is_bhutan_visa or "BHUTAN ENTRY" in full_text.upper() or "E-VISA" in full_text.upper() or "PERMIT" in full_text.upper()):
+            corridor_inadmissible = True
+            corridor_inadmissible_reason = f"Third-Country Foreign Visitor {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid') or ''}). Valid Bhutan Visa/e-Visa or Department of Immigration entry authorization is mandatory for border entry."
+        elif is_pan_card or is_driving_licence:
+            corridor_inadmissible = True
+            corridor_inadmissible_reason = "Inadmissible document for Bhutan border. Under 1949 Indo-Bhutan Treaty of Friendship and Bhutan Department of Immigration rules, Indian citizens MUST present an Indian Passport, Voter ID (EPIC), or Birth Certificate (minors). PAN / Driving Licence is NOT an approved bilateral travel credential."
+    elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
+        if is_third_country_passport and not (is_nepal_visa or "NEPAL ENTRY" in full_text.upper() or "TOURIST VISA" in full_text.upper()):
+            corridor_inadmissible = True
+            corridor_inadmissible_reason = f"Third-Country Foreign Visitor {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid') or ''}). Valid Nepal Tourist/Entry Visa or entry authorization is mandatory for border entry."
+        elif is_pan_card or is_driving_licence:
+            corridor_inadmissible = True
+            corridor_inadmissible_reason = "Inadmissible document for Nepal border. Under 1950 Indo-Nepal Treaty and Bureau of Immigration rules, Indian citizens MUST present a valid Indian Passport, Voter ID (EPIC), or Birth Certificate (minors). PAN / Driving Licence is NOT an approved international border travel document."
+
+    # Check 7: Biometric & Liveness Evaluation
+    biometric_error = None
+    if has_custom_live_cam:
+        is_live = liveness_res.get("is_live", False)
+        is_same_person = face_match_res.get("verified", False)
+        sim_percentage = face_match_res.get("similarity_percentage")
+        if not is_live:
+            biometric_error = ("REJECT_SPOOF_ATTACK", "HALT: Presentation attack detected (Mobile screen replay, 2D printed photo, or silicon mask). Turn over to border security.", "SECURITY_ALARM")
+        elif not qr_photo_for_matching:
+            biometric_error = ("REQUIRE_FULL_CREDENTIAL", "NOTICE: Live camera captured, but no face photo was extracted from the document for 1:1 biometric matching. Passenger must undergo manual secondary inspection.", "NEED_DOCUMENT_PHOTO")
+        elif not is_same_person or (sim_percentage is not None and sim_percentage < 70):
+            biometric_error = ("BORDER_INTERROGATION", f"FLAG: Biometric mismatch between live traveler and document portrait ({sim_percentage or 0}% similarity). Potential impersonator: escort to secondary interrogation.", "IMPERSONATION_ALERT")
+    else:
+        is_live = None
+        is_same_person = None
+        sim_percentage = None
+
+    # MASTER ZERO-TRUST ENFORCEMENT:
+    # If ANY issue is detected -> DENY ENTRY / REJECT!
     if not has_ocr_text:
         gate_decision = "REJECT_UNREADABLE_DOCUMENT"
         action = "HALT: Document surface text unreadable or wrong format. Required demographic credentials cannot be verified."
         status_code = "UNRECOGNIZED_FORMAT"
-    elif is_pan_card:
-        # Specialized Zero-Trust Verification for PAN Card
-        if is_tampered:
-            gate_decision = "REJECT_TAMPERED_CARD"
-            action = f"HALT: {tamper_reason or 'Invalid PAN Card structure.'}"
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the PAN card for 1:1 biometric matching."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch between live traveler and PAN card photo ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic PAN Card validated for citizen (PAN: {ocr_fields.get('printed_uid')})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic PAN Card validated (PAN: {ocr_fields.get('printed_uid')}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_third_country_passport:
-        # Third-Country / Foreign Passport
-        passport_no = ocr_fields.get("printed_uid")
-        passport_name = ocr_fields.get("printed_name")
-        if not passport_no:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: International passport details unreadable."
-            status_code = "FORGERY_DETECTED"
-        elif border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-            # Third-country visitor to Bhutan requires Bhutan entry visa/authorization
-            gate_decision = "REQUIRE_BHUTAN_VISA"
-            action = f"FLAG: Third-Country Foreign Visitor {passport_name or ''} (Passport: {passport_no}). Valid Bhutan Visa/e-Visa or Department of Immigration entry authorization is mandatory for border entry."
-            status_code = "VISA_REQUIRED"
-        elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-            # Third-country visitor to Nepal requires Nepal entry visa
-            gate_decision = "REQUIRE_NEPAL_VISA"
-            action = f"FLAG: Third-Country Foreign Visitor {passport_name or ''} (Passport: {passport_no}). Valid Nepal Tourist/Entry Visa or entry authorization is mandatory for border entry."
-            status_code = "VISA_REQUIRED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected. Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the passport."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch between live traveler and passport portrait ({sim_percentage or 0}% similarity)."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: International Passport (ICAO Doc 9303) validated for traveler {passport_name or ''} (Passport No: {passport_no})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: International Passport validated (Passport No: {passport_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_bhutan_passport:
-        passport_no = ocr_fields.get("printed_uid")
-        passport_name = ocr_fields.get("printed_name")
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: Kingdom of Bhutan Passport validated for citizen {passport_name or ''} (Passport: {passport_no}). Reciprocal visa-free entry authorized under 1949 Indo-Bhutan Treaty of Friendship."
-        status_code = "PASS"
-    elif is_nepal_passport:
-        passport_no = ocr_fields.get("printed_uid")
-        passport_name = ocr_fields.get("printed_name")
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: Nepal Passport validated for citizen {passport_name or ''} (Passport: {passport_no}). Reciprocal visa-free entry authorized under 1950 Indo-Nepal Treaty of Peace & Friendship."
-        status_code = "PASS"
-    elif is_bhutan_cid:
-        cid_no = ocr_fields.get("printed_uid")
-        cid_name = ocr_fields.get("printed_name")
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: Bhutanese Citizen Identity Card (Royal Government of Bhutan CID: {cid_no}) validated for {cid_name or 'Citizen'}. Reciprocal visa-free bilateral entry authorized under 1949 Indo-Bhutan Treaty of Friendship."
-        status_code = "PASS"
-    elif is_bhutan_visa:
-        visa_no = ocr_fields.get("printed_uid")
-        visa_name = ocr_fields.get("printed_name")
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: Bhutan Entry Permit / e-Visa authorization verified for traveler {visa_name or ''} (Permit: {visa_no}). Clearance authorized for Bhutan border entry."
-        status_code = "PASS"
-    elif is_nepal_visa:
-        visa_no = ocr_fields.get("printed_uid")
-        visa_name = ocr_fields.get("printed_name")
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: Nepal Entry Visa / Tourist Permit verified for traveler {visa_name or ''} (Visa: {visa_no}). Clearance authorized for Nepal border entry."
-        status_code = "PASS"
-    elif is_birth_cert:
-        reg_no = ocr_fields.get("printed_uid")
-        child_name = ocr_fields.get("printed_name")
-        if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-            corridor_note = "Indo-Bhutan Border Protocol (Minor Indian citizen permitted with Birth Certificate accompanied by guardian under bilateral treaty)"
-        elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-            corridor_note = "Indo-Nepal Border Protocol (Minor Indian citizen permitted with Birth Certificate accompanied by guardian per NTB guidance)"
-        else:
-            corridor_note = "Minor Travel Identity Document"
-        gate_decision = "ALLOW_PASSAGE"
-        action = f"VERIFIED: {corridor_note} validated for child {child_name or 'Minor'} (Reg: {reg_no})."
-        status_code = "PASS"
-    elif is_passport:
-        # Specialized Zero-Trust Verification for Indian Passport (ICAO Doc 9303)
-        passport_no = ocr_fields.get("printed_uid")
-        passport_name = ocr_fields.get("printed_name")
-        passport_expiry = ocr_fields.get("passport_expiry")
-        if not passport_no:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: Passport MRZ could not be parsed or passport number unreadable."
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the passport for 1:1 biometric matching."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch between live traveler and passport portrait ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-                    action = f"VERIFIED: Indian Passport validated for traveler {passport_name or ''} (Passport No: {passport_no}). Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
-                elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-                    action = f"VERIFIED: Indian Passport validated for traveler {passport_name or ''} (Passport No: {passport_no}). Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
-                else:
-                    action = f"VERIFIED: Authentic Passport validated for traveler {passport_name or ''} (Passport No: {passport_no})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-                action = f"VERIFIED: Indian Passport validated (Passport No: {passport_no}). Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
-            elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-                action = f"VERIFIED: Indian Passport validated (Passport No: {passport_no}). Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
-            else:
-                action = f"VERIFIED: Authentic Passport validated (Passport No: {passport_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_nepali_doc:
-        # Specialized Zero-Trust Verification for Nepali Citizenship Certificate
-        nepal_id = ocr_fields.get("printed_uid")
-        nepal_name = ocr_fields.get("printed_name")
-        if not nepal_id:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: Nepali Citizenship certificate number could not be extracted."
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected. Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the document."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic Nepali Citizenship Certificate validated for {nepal_name or ''} (Nagrikta ID: {nepal_id}). Reciprocal visa-free entry authorized under 1950 Indo-Nepal Treaty."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic Nepali Citizenship Certificate validated (Nagrikta ID: {nepal_id}). Reciprocal visa-free entry authorized under 1950 Indo-Nepal Treaty."
-            status_code = "PASS"
-    elif is_driving_licence:
-        # Specialized Zero-Trust Verification for Indian Motor Driving Licence
-        dl_no = ocr_fields.get("printed_uid")
-        dl_name = ocr_fields.get("printed_name")
-        if not dl_no:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: Driving Licence number unreadable or wrong format."
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the Driving Licence for 1:1 biometric matching."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch between live traveler and Driving Licence photo ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic Driving Licence validated for citizen {dl_name or ''} (DL No: {dl_no})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic Driving Licence validated (DL No: {dl_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_voter_card:
-        # Specialized Zero-Trust Verification for Voter ID Card (Election Commission of India / EPIC)
-        voter_no = ocr_fields.get("printed_uid")
-        voter_name = ocr_fields.get("printed_name")
-        if not voter_no:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: Voter ID (EPIC) number unreadable or wrong format."
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the Voter ID for 1:1 biometric matching."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch between live traveler and Voter ID photo ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-                    action = f"VERIFIED: Indian Voter ID Card (Election Commission of India / EPIC: {voter_no}) validated for citizen {voter_name or ''}. Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
-                elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-                    action = f"VERIFIED: Indian Voter ID Card (Election Commission of India / EPIC: {voter_no}) validated for citizen {voter_name or ''}. Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
-                else:
-                    action = f"VERIFIED: Authentic Voter ID Card (Election Commission of India) validated for citizen {voter_name or ''} (EPIC: {voter_no})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
-                action = f"VERIFIED: Indian Voter ID Card (EPIC: {voter_no}) validated. Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
-            elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
-                action = f"VERIFIED: Indian Voter ID Card (EPIC: {voter_no}) validated. Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
-            else:
-                action = f"VERIFIED: Authentic Voter ID Card validated (EPIC: {voter_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_transit_pass:
-        # Specialized Zero-Trust Verification for Border Transit Permit
-        pass_no = ocr_fields.get("printed_uid")
-        pass_name = ocr_fields.get("printed_name")
-        if has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected. Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the Transit Permit."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic Border Transit Permit validated for traveler {pass_name or ''} (Permit: {pass_no})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic Border Transit Permit validated (Permit: {pass_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_national_id and not is_aadhaar_card:
-        # Recognized National / Government Identity Document
-        nat_id = ocr_fields.get("printed_uid")
-        nat_name = ocr_fields.get("printed_name")
-        if has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected. Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the document."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic Government Identity Card validated for citizen {nat_name or ''} (ID: {nat_id})."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic Government Identity Card validated (ID: {nat_id}). Live face verification was skipped."
-            status_code = "PASS"
-    elif is_aadhaar_card and not has_qr:
-        # Aadhaar Card front-side only
-        aadhaar_no = ocr_fields.get("printed_uid")
-        aadhaar_name = ocr_fields.get("printed_name")
-        if not aadhaar_no:
-            gate_decision = "REJECT_UNREADABLE_DOCUMENT"
-            action = "HALT: Aadhaar 12-digit number unreadable or wrong format."
-            status_code = "FORGERY_DETECTED"
-        elif has_custom_live_cam:
-            is_live = liveness_res.get("is_live", False)
-            is_same_person = face_match_res.get("verified", False)
-            sim_percentage = face_match_res.get("similarity_percentage")
-            if not is_live:
-                gate_decision = "REJECT_SPOOF_ATTACK"
-                action = "HALT: Presentation attack detected. Turn over to border security."
-                status_code = "SECURITY_ALARM"
-            elif not qr_photo_for_matching:
-                gate_decision = "REQUIRE_FULL_CREDENTIAL"
-                action = "NOTICE: Live camera captured, but no face photo was extracted from the Aadhaar card."
-                status_code = "NEED_DOCUMENT_PHOTO"
-            elif not is_same_person:
-                gate_decision = "BORDER_INTERROGATION"
-                action = f"FLAG: Biometric mismatch ({sim_percentage or 0}% similarity). Escort to secondary screening."
-                status_code = "IMPERSONATION_ALERT"
-            else:
-                gate_decision = "ALLOW_PASSAGE"
-                action = f"VERIFIED: Authentic Aadhaar Card front credentials & biometric photo verified for {aadhaar_name or ''} (Aadhaar: {aadhaar_no}). Dual-side QR scan recommended for full cryptographic clearance."
-                status_code = "PASS"
-        else:
-            is_live = None
-            is_same_person = None
-            sim_percentage = None
-            gate_decision = "ALLOW_PASSAGE"
-            action = f"VERIFIED: Authentic Aadhaar Card front credentials validated (Aadhaar: {aadhaar_no}). Live face verification was skipped."
-            status_code = "PASS"
-    elif not has_qr:
-        gate_decision = "REJECT_MISSING_QR"
-        action = "HALT: No verifiable QR code detected. Mandatory cryptographic digital signature is missing or corrupted."
-        status_code = "FORGERY_DETECTED"
-    elif not qr_sig_valid:
-        gate_decision = "REJECT_FORGED_QR_SIGNATURE"
-        action = "CRITICAL ALERT: 2048-bit Digital Signature verification failed. QR payload has been forged, altered, or self-signed."
-        status_code = "FORGERY_DETECTED"
     elif is_tampered:
         gate_decision = "REJECT_TAMPERED_CARD"
-        action = f"HALT: {tamper_reason or 'Physical card text does not match cryptographic QR data. Confiscate forged credential.'}"
+        action = f"HALT: Tampering or discrepancy detected: {tamper_reason}. Confiscate forged credential and deny entry."
         status_code = "FORGERY_DETECTED"
-    elif has_custom_live_cam:
-        is_live = liveness_res.get("is_live", False)
-        is_same_person = face_match_res.get("verified", False)
-        sim_percentage = face_match_res.get("similarity_percentage")
-
-        if not is_live:
-            gate_decision = "REJECT_SPOOF_ATTACK"
-            action = "HALT: Presentation attack detected (Mobile screen or printed photo). Turn over to border security."
-            status_code = "SECURITY_ALARM"
-        elif not qr_photo_for_matching:
-            gate_decision = "REQUIRE_FULL_CREDENTIAL"
-            action = "NOTICE: Live camera captured, but no face photo was extracted from the document for 1:1 biometric matching."
-            status_code = "NEED_DOCUMENT_PHOTO"
-        elif not is_same_person:
-            gate_decision = "BORDER_INTERROGATION"
-            action = f"FLAG: Biometric mismatch between live traveler and document photo ({sim_percentage or 0}% similarity). Escort to secondary screening."
-            status_code = "IMPERSONATION_ALERT"
+    elif has_qr and not qr_sig_valid:
+        gate_decision = "REJECT_FORGED_QR_SIGNATURE"
+        action = "CRITICAL ALERT: 2048-bit Digital Signature verification failed. QR payload has been forged, altered, or self-signed. Confiscate fraudulent credential."
+        status_code = "FORGERY_DETECTED"
+    elif is_expired:
+        gate_decision = "REJECT_DOCUMENT_EXPIRED"
+        action = f"HALT: Travel document has EXPIRED (Validity ended: {expiry_date_str}). Under international border regulations, entry is strictly forbidden with an expired credential."
+        status_code = "DOCUMENT_EXPIRED"
+    elif checksum_error:
+        gate_decision = "REJECT_INVALID_CHECKSUM_OR_FORMAT"
+        action = f"HALT: {checksum_error}"
+        status_code = "FORGERY_DETECTED"
+    elif corridor_inadmissible:
+        if "Visa" in (corridor_inadmissible_reason or ""):
+            gate_decision = "REQUIRE_BHUTAN_VISA" if "BHUTAN" in border_corridor else "REQUIRE_NEPAL_VISA"
+            action = f"FLAG: {corridor_inadmissible_reason}"
+            status_code = "VISA_REQUIRED"
         else:
-            # Everything passed with live camera!
-            gate_decision = "ALLOW_PASSAGE"
-            action = "VERIFIED: Authentic citizen with verified credentials and confirmed clearance."
-            status_code = "PASS"
+            gate_decision = "INADMISSIBLE_BORDER_DOCUMENT"
+            action = f"HALT: {corridor_inadmissible_reason}"
+            status_code = "INADMISSIBLE_DOCUMENT"
+    elif biometric_error:
+        gate_decision, action, status_code = biometric_error
     else:
-        # Everything passed (webcam skipped, document is 100% authentic)
-        is_live = None
-        is_same_person = None
-        sim_percentage = None
+        # ABSOLUTELY ZERO ERRORS FOUND across all dimensions -> ALLOW PASSAGE
         gate_decision = "ALLOW_PASSAGE"
-        action = "VERIFIED: Authentic citizen credential validated (Biometric live face verification was skipped)."
         status_code = "PASS"
+        if is_bhutan_passport:
+            action = f"VERIFIED: Kingdom of Bhutan Passport validated for citizen {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid')}). Reciprocal visa-free entry authorized under 1949 Indo-Bhutan Treaty of Friendship."
+        elif is_nepal_passport:
+            action = f"VERIFIED: Nepal Passport validated for citizen {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid')}). Reciprocal visa-free entry authorized under 1950 Indo-Nepal Treaty of Peace & Friendship."
+        elif is_bhutan_cid:
+            action = f"VERIFIED: Bhutanese Citizen Identity Card (Royal Government of Bhutan CID: {ocr_fields.get('printed_uid')}) validated for {ocr_fields.get('printed_name') or 'Citizen'}. Reciprocal visa-free bilateral entry authorized under 1949 Indo-Bhutan Treaty of Friendship."
+        elif is_bhutan_visa:
+            action = f"VERIFIED: Bhutan Entry Permit / e-Visa authorization verified for traveler {ocr_fields.get('printed_name') or ''} (Permit: {ocr_fields.get('printed_uid')}). Clearance authorized for Bhutan border entry."
+        elif is_nepal_visa:
+            action = f"VERIFIED: Nepal Entry Visa / Tourist Permit verified for traveler {ocr_fields.get('printed_name') or ''} (Visa: {ocr_fields.get('printed_uid')}). Clearance authorized for Nepal border entry."
+        elif is_birth_cert:
+            if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
+                corridor_note = "Indo-Bhutan Border Protocol (Minor Indian citizen permitted with Birth Certificate accompanied by guardian under bilateral treaty)"
+            elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
+                corridor_note = "Indo-Nepal Border Protocol (Minor Indian citizen permitted with Birth Certificate accompanied by guardian per NTB guidance)"
+            else:
+                corridor_note = "Minor Travel Identity Document"
+            action = f"VERIFIED: {corridor_note} validated for child {ocr_fields.get('printed_name') or 'Minor'} (Reg: {ocr_fields.get('printed_uid')})."
+        elif is_passport:
+            if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
+                action = f"VERIFIED: Indian Passport validated for traveler {ocr_fields.get('printed_name') or ''} (Passport No: {ocr_fields.get('printed_uid')}). Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
+            elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
+                action = f"VERIFIED: Indian Passport validated for traveler {ocr_fields.get('printed_name') or ''} (Passport No: {ocr_fields.get('printed_uid')}). Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
+            else:
+                action = f"VERIFIED: Authentic Passport validated for traveler {ocr_fields.get('printed_name') or ''} (Passport No: {ocr_fields.get('printed_uid')})."
+        elif is_nepali_doc:
+            action = f"VERIFIED: Authentic Nepali Citizenship Certificate validated for {ocr_fields.get('printed_name') or ''} (Nagrikta ID: {ocr_fields.get('printed_uid')}). Reciprocal visa-free entry authorized under 1950 Indo-Nepal Treaty."
+        elif is_voter_card:
+            if border_corridor in ["INDO_BHUTAN", "BHUTAN"]:
+                action = f"VERIFIED: Indian Voter ID Card (Election Commission of India / EPIC: {ocr_fields.get('printed_uid')}) validated for citizen {ocr_fields.get('printed_name') or ''}. Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral passage)."
+            elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
+                action = f"VERIFIED: Indian Voter ID Card (Election Commission of India / EPIC: {ocr_fields.get('printed_uid')}) validated for citizen {ocr_fields.get('printed_name') or ''}. Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Visa-free bilateral passage)."
+            else:
+                action = f"VERIFIED: Authentic Voter ID Card (Election Commission of India) validated for citizen {ocr_fields.get('printed_name') or ''} (EPIC: {ocr_fields.get('printed_uid')})."
+        elif is_driving_licence:
+            action = f"VERIFIED: Authentic Driving Licence validated for citizen {ocr_fields.get('printed_name') or ''} (DL No: {ocr_fields.get('printed_uid')})."
+        elif is_pan_card:
+            action = f"VERIFIED: Authentic PAN Card validated for citizen {ocr_fields.get('printed_name') or ''} (PAN: {ocr_fields.get('printed_uid')})."
+        elif is_transit_pass:
+            action = f"VERIFIED: Authentic Border Transit Permit validated for traveler {ocr_fields.get('printed_name') or ''} (Permit: {ocr_fields.get('printed_uid')})."
+        elif is_third_country_passport:
+            action = f"VERIFIED: International Passport (ICAO Doc 9303) validated for traveler {ocr_fields.get('printed_name') or ''} (Passport No: {ocr_fields.get('printed_uid')})."
+        else:
+            action = f"VERIFIED: Authentic credential validated for traveler {ocr_fields.get('printed_name') or ''} (ID: {ocr_fields.get('printed_uid')})."
 
     # Extract real identity attributes from QR payload or Card OCR
     qr_payload = (qr_res and (qr_res.get("decoded_data") or qr_res.get("data"))) or {}
