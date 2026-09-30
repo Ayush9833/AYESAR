@@ -25,7 +25,7 @@ export default function UploadBox({ onStartScreening, isLoading }) {
   const [selfieFile, setSelfieFile] = useState(null);
   const [selfiePreview, setSelfiePreview] = useState(null);
   const [documentType, setDocumentType] = useState('Auto-Detect (AI)');
-  const [borderCorridor, setBorderCorridor] = useState('INDO_BHUTAN');
+  const [borderCorridor, setBorderCorridor] = useState('UNIVERSAL');
   const [isDragging, setIsDragging] = useState(false);
   const [isDraggingBack, setIsDraggingBack] = useState(false);
 
@@ -227,6 +227,30 @@ export default function UploadBox({ onStartScreening, isLoading }) {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+            {/* Universal Checkpoint */}
+            <button
+              type="button"
+              onClick={() => setBorderCorridor('UNIVERSAL')}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                borderCorridor === 'UNIVERSAL'
+                  ? 'border-cyan-500 bg-white shadow-sm ring-2 ring-cyan-500/20'
+                  : 'border-slate-200 bg-white/70 hover:bg-white hover:border-slate-300'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
+                  <Globe2 size={13} className="text-indigo-600" />
+                  <span>Universal Checkpoint</span>
+                </span>
+                {borderCorridor === 'UNIVERSAL' && (
+                  <span className="w-2 h-2 rounded-full bg-cyan-600"></span>
+                )}
+              </div>
+              <p className="text-[10px] text-slate-500 leading-tight">
+                SSB / BSF Border Post • All Government & Travel IDs
+              </p>
+            </button>
+
             {/* India ↔ Bhutan */}
             <button
               type="button"
@@ -272,30 +296,6 @@ export default function UploadBox({ onStartScreening, isLoading }) {
               </div>
               <p className="text-[10px] text-slate-500 leading-tight">
                 Raxaul / Birgunj / Sunauli • 1950 Peace Treaty
-              </p>
-            </button>
-
-            {/* Universal Checkpoint */}
-            <button
-              type="button"
-              onClick={() => setBorderCorridor('UNIVERSAL')}
-              className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                borderCorridor === 'UNIVERSAL'
-                  ? 'border-cyan-500 bg-white shadow-sm ring-2 ring-cyan-500/20'
-                  : 'border-slate-200 bg-white/70 hover:bg-white hover:border-slate-300'
-              }`}
-            >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-extrabold text-slate-900 flex items-center gap-1.5">
-                  <Globe2 size={13} className="text-indigo-600" />
-                  <span>Universal Checkpoint</span>
-                </span>
-                {borderCorridor === 'UNIVERSAL' && (
-                  <span className="w-2 h-2 rounded-full bg-cyan-600"></span>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-500 leading-tight">
-                General Border Gate • All National & Travel IDs
               </p>
             </button>
           </div>

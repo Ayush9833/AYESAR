@@ -586,16 +586,10 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
         if is_third_country_passport and not (is_bhutan_visa or "BHUTAN ENTRY" in full_text.upper() or "E-VISA" in full_text.upper() or "PERMIT" in full_text.upper()):
             corridor_inadmissible = True
             corridor_inadmissible_reason = f"Third-Country Foreign Visitor {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid') or ''}). Valid Bhutan Visa/e-Visa or Department of Immigration entry authorization is mandatory for border entry."
-        elif is_pan_card or is_driving_licence:
-            corridor_inadmissible = True
-            corridor_inadmissible_reason = "Inadmissible document for Bhutan border. Under 1949 Indo-Bhutan Treaty of Friendship and Bhutan Department of Immigration rules, Indian citizens MUST present an Indian Passport, Voter ID (EPIC), or Birth Certificate (minors). PAN / Driving Licence is NOT an approved bilateral travel credential."
     elif border_corridor in ["INDO_NEPAL", "NEPAL"]:
         if is_third_country_passport and not (is_nepal_visa or "NEPAL ENTRY" in full_text.upper() or "TOURIST VISA" in full_text.upper()):
             corridor_inadmissible = True
             corridor_inadmissible_reason = f"Third-Country Foreign Visitor {ocr_fields.get('printed_name') or ''} (Passport: {ocr_fields.get('printed_uid') or ''}). Valid Nepal Tourist/Entry Visa or entry authorization is mandatory for border entry."
-        elif is_pan_card or is_driving_licence:
-            corridor_inadmissible = True
-            corridor_inadmissible_reason = "Inadmissible document for Nepal border. Under 1950 Indo-Nepal Treaty and Bureau of Immigration rules, Indian citizens MUST present a valid Indian Passport, Voter ID (EPIC), or Birth Certificate (minors). PAN / Driving Licence is NOT an approved international border travel document."
 
     # Check 7: Biometric & Liveness Evaluation
     biometric_error = None
@@ -686,9 +680,9 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
             else:
                 action = f"VERIFIED: Authentic Voter ID Card (Election Commission of India) validated for citizen {ocr_fields.get('printed_name') or ''} (EPIC: {ocr_fields.get('printed_uid')})."
         elif is_driving_licence:
-            action = f"VERIFIED: Authentic Driving Licence validated for citizen {ocr_fields.get('printed_name') or ''} (DL No: {ocr_fields.get('printed_uid')})."
+            action = f"VERIFIED: Authentic Driving Licence (Motor Vehicles Department / DL No: {ocr_fields.get('printed_uid')}) validated for Border Security & Identity Authentication of citizen {ocr_fields.get('printed_name') or ''}."
         elif is_pan_card:
-            action = f"VERIFIED: Authentic PAN Card validated for citizen {ocr_fields.get('printed_name') or ''} (PAN: {ocr_fields.get('printed_uid')})."
+            action = f"VERIFIED: Authentic Indian PAN Card (Income Tax Department / PAN: {ocr_fields.get('printed_uid')}) validated for Border Security & Identity Authentication of citizen {ocr_fields.get('printed_name') or ''}."
         elif is_transit_pass:
             action = f"VERIFIED: Authentic Border Transit Permit validated for traveler {ocr_fields.get('printed_name') or ''} (Permit: {ocr_fields.get('printed_uid')})."
         elif is_third_country_passport:
@@ -871,7 +865,7 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
         "border_corridor": border_corridor,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
         "gate_decision": gate_decision,
-        "tamper_status": "FORGERY DETECTED" if (is_tampered or gate_decision != "ALLOW_PASSAGE") else "OK",
+        "tamper_status": "FORGERY DETECTED" if is_tampered else ("EXPIRED" if is_expired else ("INVALID_CHECKSUM" if checksum_error else ("VISA_REQUIRED" if "VISA" in gate_decision else "OK"))),
         "action_required": action,
         "extracted_identity": extracted_identity,
         "biometrics": {

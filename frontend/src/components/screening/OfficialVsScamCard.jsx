@@ -16,14 +16,15 @@ import {
 
 export default function OfficialVsScamCard({ officialVsScam, status, riskScore, documentType }) {
   const isOfficial = status === 'VERIFIED' && riskScore <= 35;
-  const isScam = status === 'SUSPICIOUS' || riskScore > 65;
+  const isVisaRequired = status === 'VISA_REQUIRED';
+  const isScam = (status === 'SUSPICIOUS' || status === 'FORGERY_DETECTED') && riskScore >= 70;
   const isReview = !isOfficial && !isScam;
 
   const defaultChecklist = [
     {
       criterion: "Government Issuer Authority & Heraldic Seals",
-      status: isOfficial ? "AUTHENTIC" : isScam ? "FORGED" : "VARIANCE",
-      detail: isOfficial 
+      status: (isOfficial || isVisaRequired) ? "AUTHENTIC" : isScam ? "FORGED" : "VARIANCE",
+      detail: (isOfficial || isVisaRequired)
         ? "National emblem alignment, official font typography, and micro-print guilloche conform to gazette templates."
         : isScam
         ? "Synthetically superimposed emblem and non-standard typography indicate desktop counterfeit generator."
@@ -31,17 +32,17 @@ export default function OfficialVsScamCard({ officialVsScam, status, riskScore, 
     },
     {
       criterion: "Mathematical Checksum & Statutory Generation Formula",
-      status: isOfficial ? "AUTHENTIC" : isScam ? "FAILED_CHECKSUM" : "AUTHENTIC",
-      detail: isOfficial 
-        ? `Document ID sequence adheres to official statutory mathematical algorithms (Verhoeff / ICAO Modulo-7 / MCA rules).`
+      status: (isOfficial || isVisaRequired) ? "AUTHENTIC" : isScam ? "FAILED_CHECKSUM" : "AUTHENTIC",
+      detail: (isOfficial || isVisaRequired)
+        ? `Document ID sequence adheres to official statutory mathematical algorithms (Verhoeff / ICAO Modulo-7 / MCA / PAN rules).`
         : isScam
         ? "Failed statutory checksum: ID sequence is mathematically invalid and impossible under official generation."
         : "Structure complies with basic regex pattern, but secondary registry lookup is recommended."
     },
     {
       criterion: "Cryptographic QR Matrix & Digital Signature",
-      status: isOfficial ? "AUTHENTIC" : isScam ? "TAMPERED" : "AUTHENTIC",
-      detail: isOfficial 
+      status: (isOfficial || isVisaRequired) ? "AUTHENTIC" : isScam ? "TAMPERED" : "AUTHENTIC",
+      detail: (isOfficial || isVisaRequired)
         ? "Encoded cryptographic payload perfectly cross-matches printed OCR text with zero variance."
         : isScam
         ? "2D QR code / barcode payload does not match printed identity data, or digital signature is missing."
@@ -49,8 +50,8 @@ export default function OfficialVsScamCard({ officialVsScam, status, riskScore, 
     },
     {
       criterion: "Forensic Pixel Authenticity (ELA & Clone Detection)",
-      status: isOfficial ? "AUTHENTIC" : isScam ? "MANIPULATED" : "VARIANCE",
-      detail: isOfficial 
+      status: (isOfficial || isVisaRequired) ? "AUTHENTIC" : isScam ? "MANIPULATED" : "VARIANCE",
+      detail: (isOfficial || isVisaRequired)
         ? "Uniform sensor noise and single-quantization tables confirm authentic single-pass physical issuance."
         : isScam
         ? "Multi-compression layers, cloned pixel blocks, and high-frequency edge artifacts confirm post-issuance editing."
@@ -100,11 +101,13 @@ export default function OfficialVsScamCard({ officialVsScam, status, riskScore, 
                 <span className={`text-[10px] font-extrabold uppercase tracking-widest px-2.5 py-0.5 rounded-full ${
                   isOfficial 
                     ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                    : isVisaRequired
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
                     : isScam 
                     ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30' 
                     : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                 }`}>
-                  {isOfficial ? 'AUTHENTICITY SEAL: VERIFIED' : isScam ? 'CRITICAL FRAUD ALERT' : 'AUDIT WARNING'}
+                  {isOfficial ? 'AUTHENTICITY SEAL: VERIFIED' : isVisaRequired ? 'CREDENTIAL VALID • VISA REQUIRED' : isScam ? 'CRITICAL FRAUD ALERT' : 'AUDIT NOTICE'}
                 </span>
                 <span className="text-xs text-slate-400 font-mono">
                   {documentType}
@@ -112,15 +115,23 @@ export default function OfficialVsScamCard({ officialVsScam, status, riskScore, 
               </div>
 
               <h2 className="text-2xl sm:text-3xl font-black tracking-tight mt-1 text-white">
-                {isOfficial ? 'OFFICIALLY GENERATED DOCUMENT' : isScam ? 'SCAM / FAKE DOCUMENT DETECTED' : 'UNOFFICIAL / SUSPICIOUS DOCUMENT'}
+                {isOfficial 
+                  ? 'OFFICIALLY GENERATED DOCUMENT' 
+                  : isVisaRequired
+                  ? 'OFFICIAL TRAVEL DOCUMENT — VISA REQUIRED'
+                  : isScam 
+                  ? 'SCAM / FAKE DOCUMENT DETECTED' 
+                  : 'DOCUMENT CLEARED FOR SECONDARY VERIFICATION'}
               </h2>
               
               <p className="text-xs sm:text-sm text-slate-300 mt-1 max-w-2xl leading-relaxed">
                 {isOfficial 
                   ? 'This document matches official government issuance standards. Cryptographic security features, micro-print alignment, and statutory registry structures validated.'
+                  : isVisaRequired
+                  ? 'Document is an authentic government-issued passport; entry authorization / visa required for bilateral border passage.'
                   : isScam
                   ? 'CRITICAL WARNING: This document was NOT officially generated. It contains synthetic layout cloning, unauthorized emblem alterations, or digital tampering.'
-                  : 'Document exhibits localized variances or font anomalies that deviate from standard gazette issuance. Secondary manual verification recommended.'}
+                  : 'Document identity verified for border security. Secondary physical inspection or supplementary treaty credential recommended.'}
               </p>
             </div>
           </div>
