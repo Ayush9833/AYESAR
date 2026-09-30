@@ -621,8 +621,9 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
         border_corridor: borderCorridor || 'UNIVERSAL'
       };
 
+      const isGitHubPages = typeof window !== 'undefined' && window.location.hostname.includes('github.io');
       const host = (typeof window !== 'undefined' && window.location.hostname) ? window.location.hostname : '127.0.0.1';
-      const candidateUrls = [
+      const candidateUrls = isGitHubPages ? [] : [
         '/api/v1/screen-traveler',
         `http://${host}:8000/api/v1/screen-traveler`,
         'http://127.0.0.1:8000/api/v1/screen-traveler',
@@ -632,11 +633,15 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       let response = null;
       for (const endpoint of candidateUrls) {
         try {
+          const controller = new AbortController();
+          const tid = setTimeout(() => controller.abort(), 1200);
           const r = await fetch(endpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payloadObj)
+            body: JSON.stringify(payloadObj),
+            signal: controller.signal
           });
+          clearTimeout(tid);
           if (r.ok) {
             response = r;
             break;
