@@ -682,12 +682,31 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
         'http://localhost:8000/api/v1/screen-traveler'
       ];
 
+      let backendEndpoint = null;
+      if (!isGitHubPages) {
+        for (const endpoint of candidateUrls) {
+          try {
+            const healthUrl = endpoint.replace('/api/v1/screen-traveler', '/health');
+            const ctrl = new AbortController();
+            const tid = setTimeout(() => ctrl.abort(), 900);
+            const r = await fetch(healthUrl, { method: 'GET', signal: ctrl.signal });
+            clearTimeout(tid);
+            if (r.ok) {
+              backendEndpoint = endpoint;
+              break;
+            }
+          } catch (e) {
+            // try next candidate endpoint
+          }
+        }
+      }
+
       let response = null;
-      for (const endpoint of candidateUrls) {
+      if (backendEndpoint) {
         try {
           const controller = new AbortController();
-          const tid = setTimeout(() => controller.abort(), 1200);
-          const r = await fetch(endpoint, {
+          const tid = setTimeout(() => controller.abort(), 35000);
+          const r = await fetch(backendEndpoint, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payloadObj),
@@ -696,10 +715,9 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
           clearTimeout(tid);
           if (r.ok) {
             response = r;
-            break;
           }
         } catch (e) {
-          // try next candidate endpoint
+          console.warn('Backend screening call timed out or failed, falling back to edge engine', e);
         }
       }
 
@@ -742,6 +760,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
         const realScreening = {
           id: newId,
           createdAt: new Date().toISOString(),
+          fileUrl: frontDataUrl || backDataUrl || ext.photo_base64 || null,
           documentType: ext.document_type || documentType || 'National ID',
           borderCorridor: ext.border_corridor || borderCorridor || 'UNIVERSAL',
           applicantName: ext.name || (isVerified ? 'AUTHENTICATED TRAVELER' : 'UNVERIFIED TRAVELER'),
@@ -761,8 +780,10 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
           fileSize: documentFile ? `${(documentFile.size / (1024 * 1024)).toFixed(2)} MB` : (backSideFile ? `${(backSideFile.size / (1024 * 1024)).toFixed(2)} MB` : '1.5 MB'),
           dimensions: '1920x1080',
           photoUrl: ext.restored_photo_base64 || ext.photo_base64 || null,
-          documentPhoto: ext.photo_base64 || null,
+          documentPhoto: frontDataUrl || ext.photo_base64 || null,
           restoredPhoto: ext.restored_photo_base64 || null,
+          cardFrontUrl: frontDataUrl || null,
+          cardBackUrl: backDataUrl || null,
           extractedFields: {
             name: ext.name,
             fatherName: ext.father_name || null,
@@ -937,14 +958,18 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
 
     const cleanFileName = documentFile ? documentFile.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").toUpperCase() : null;
 
+    // Filter out system words and file descriptors so filenames like "VOTERID", "AADHAAR", "PAN" are NEVER assigned as citizen names
+    const genericNamePattern = /^(VOTER|ID|CARD|DOC|DOCUMENT|AADHAAR|PAN|PASSPORT|DL|DRIVING|LICENSE|PHOTO|IMAGE|FILE|IMG|SCAN|SAMPLE|TEST|WHATSAPP|SCREENSHOT|DOWNLOAD|UPLOAD)/i;
+    const isGenericFileName = !cleanFileName || genericNamePattern.test(cleanFileName.trim()) || cleanFileName.trim().length < 3;
+
     // 3. Resolve Real Demographics (Never use dummy names like Pooja Verma or Aarav Sharma)
-    const realName = parsedQr?.name || ocrResult?.name || (cleanFileName && cleanFileName.length >= 3 && !cleanFileName.includes('IMG') && !cleanFileName.includes('PHOTO') ? cleanFileName : 'AUTHENTICATED TRAVELER');
+    const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
+    const realName = parsedQr?.name || ocrResult?.name || (!isGenericFileName ? cleanFileName : 'AUTHENTICATED TRAVELER');
     const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || 'Registered';
-    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || (documentType?.includes('PAN') ? 'PAN-REGISTERED' : (documentType?.includes('Passport') ? 'PASS-REGISTERED' : 'DOC-VERIFIED'));
+    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || (detectedDocType.includes('PAN') ? 'PAN-REGISTERED' : (detectedDocType.includes('Passport') ? 'PASS-REGISTERED' : (detectedDocType.includes('Voter') ? 'VOTER-REGISTERED' : 'DOC-VERIFIED')));
     const realGender = parsedQr?.gender || ocrResult?.gender || 'M';
     const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || 'Border Checkpoint Inspection Area';
     const realPhoto = parsedQr?.photo || ocrResult?.photo || frontDataUrl || null;
-    const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
 
     const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 5 && !realId.includes('UNVERIFIED')));
 
@@ -1054,6 +1079,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       fileName: documentFile?.name || backSideFile?.name || 'Border_Document.jpg',
       fileSize: documentFile ? `${(documentFile.size / (1024 * 1024)).toFixed(2)} MB` : '1.20 MB',
       dimensions: '1920x1080',
+      fileUrl: frontDataUrl || backDataUrl || realPhoto || null,
       photoUrl: realPhoto,
       documentPhoto: frontDataUrl || realPhoto,
       restoredPhoto: realPhoto,

@@ -169,6 +169,7 @@ export function parseUniversalDocumentOCR(rawText) {
   const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
 
   let documentType = 'Unknown';
+  let uid = null;
   if (/aadhaar|uidai|unique identification|mera aadhaar|meri pehchan|आधार|विशिष्ट पहचान|मेरा आधार|1947|uidai\.gov\.in/i.test(rawText)) {
     if (/address|पता|c\/o|s\/o|w\/o|d\/o|आत्मज|पुत्र|पत्नी|पिता|pin|pincode/i.test(rawText)) {
       documentType = 'Aadhaar Card (Back / Address)';
@@ -209,7 +210,17 @@ export function parseUniversalDocumentOCR(rawText) {
     panEntityType = entityMap[entityChar] || 'Individual';
   }
 
-  // 2. Date of Birth
+  // 1b. Universal Voter ID (EPIC) Detection & Check
+  const epicMatch = rawText.match(/\b([A-Z]{3}[0-9]{7}|[A-Z]{2,4}[0-9]{6,8})\b/i);
+  if (epicMatch) {
+    const cleanedEpic = epicMatch[1].toUpperCase();
+    if (!uid) uid = cleanedEpic;
+    if (documentType === 'Unknown' || documentType === 'Voter ID') {
+      documentType = 'Voter ID Card (Election Commission of India)';
+    }
+  }
+
+  // 2. Date of Birth or Age
   let dob = null;
   const dobMatch = rawText.match(/(?:DOB|Birth|जन्म\s*तिथि|Year\s*of\s*Birth|Date\s*of\s*Birth)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4})/i);
   if (dobMatch) {
@@ -217,6 +228,12 @@ export function parseUniversalDocumentOCR(rawText) {
   } else {
     const dateMatch = rawText.match(/\b(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})\b/);
     if (dateMatch) dob = dateMatch[1].replace(/[\.\-]/g, '/');
+  }
+  if (!dob) {
+    const ageMatch = rawText.match(/(?:Age|आयु)[:\s\-]*(\d{1,3})/i);
+    if (ageMatch) {
+      dob = `Age: ${ageMatch[1]} Years`;
+    }
   }
 
   // 3. Expiration Date (for Passports, Visas, Driving Licences)
@@ -265,7 +282,7 @@ export function parseUniversalDocumentOCR(rawText) {
   let fatherName = null;
   let dobLineIndex = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (/DOB|Birth|जन्म/i.test(lines[i])) {
+    if (/DOB|Birth|जन्म|Age|आयु/i.test(lines[i])) {
       dobLineIndex = i;
       break;
     }
@@ -277,8 +294,27 @@ export function parseUniversalDocumentOCR(rawText) {
     'HELP', 'TO', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'WIFE',
     'DOB', 'DATE OF BIRTH', 'YEAR OF BIRTH', 'INDIA', 'GOVT', 'PEHCHAAN',
     'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD', 'SIGNATURE',
-    'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE'
+    'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE',
+    'ELECTION COMMISSION OF INDIA', 'ELECTION COMMISSION', 'ELECTORAL PHOTO',
+    'IDENTITY CARD', 'VOTER ID', 'VOTER', 'ELECTOR', 'EPIC'
   ];
+
+  // Specific Voter ID Regex Extraction
+  const electorNameMatch = rawText.match(/(?:Elector'?s?\s*Name|Name\s*of\s*Elector|Name|नाम)[:\s\-]*([A-Za-z\s\.]+)/i);
+  const electorFatherMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम)[:\s\-]*([A-Za-z\s\.]+)/i);
+
+  if (electorNameMatch && !name) {
+    const cand = electorNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+    if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+      name = cand;
+    }
+  }
+  if (electorFatherMatch && !fatherName) {
+    const cand = electorFatherMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+    if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+      fatherName = cand;
+    }
+  }
 
   if (documentType === 'PAN Card' && dobLineIndex > 0) {
     const candidateLines = [];
@@ -290,12 +326,12 @@ export function parseUniversalDocumentOCR(rawText) {
       }
     }
     if (candidateLines.length >= 2) {
-      name = candidateLines[0];
-      fatherName = candidateLines[1];
-    } else if (candidateLines.length === 1) {
+      if (!name) name = candidateLines[0];
+      if (!fatherName) fatherName = candidateLines[1];
+    } else if (candidateLines.length === 1 && !name) {
       name = candidateLines[0];
     }
-  } else if (dobLineIndex > 0) {
+  } else if (dobLineIndex > 0 && !name) {
     for (let j = dobLineIndex - 1; j >= 0; j--) {
       const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
       const upper = cand.toUpperCase();
@@ -314,7 +350,7 @@ export function parseUniversalDocumentOCR(rawText) {
     }
   }
 
-  // 7. Address extraction (for Aadhaar Back, Passports, DL)
+  // 7. Address extraction (for Aadhaar Back, Passports, DL, Voter ID)
   let address = null;
   const addressMatch = rawText.match(/(?:Address|पता)[:\s\-]*([\s\S]{10,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|$)/i);
   if (addressMatch) {
@@ -407,33 +443,36 @@ export async function performAadhaarCardOCR(imageSource) {
       } catch (e) {}
     }
 
-    // Optimize and compress image for ultra-fast OCR transfer (< 90KB payload for instant mobile response)
+    // Optimize and compress image for ultra-fast OCR transfer (< 120KB payload)
     let ocrBase64 = dataUrl;
     if (canvasForCrop) {
       const maxDim = Math.max(canvasForCrop.width, canvasForCrop.height);
-      const scale = maxDim > 850 ? 850 / maxDim : 1.0;
+      const scale = maxDim > 950 ? 950 / maxDim : 1.0;
       const optCvs = document.createElement('canvas');
       optCvs.width = Math.round(canvasForCrop.width * scale);
       optCvs.height = Math.round(canvasForCrop.height * scale);
       const optCtx = optCvs.getContext('2d');
       optCtx.drawImage(canvasForCrop, 0, 0, optCvs.width, optCvs.height);
-      ocrBase64 = optCvs.toDataURL('image/jpeg', 0.72);
+      ocrBase64 = optCvs.toDataURL('image/jpeg', 0.78);
     }
 
-    // Rotating multi-key OCR pool to eliminate 503 Service Unavailable / Rate Limit errors
+    // Multi-key OCR pool with robust timeout
     const OCR_API_KEYS = ['K87899142388957', 'K89865188888957', 'helloworld'];
     let parsedText = '';
 
-    for (const key of OCR_API_KEYS.slice(0, 2)) {
+    for (const key of OCR_API_KEYS) {
       try {
         const formData = new FormData();
         formData.append('base64Image', ocrBase64);
         formData.append('language', 'eng');
         formData.append('isOverlayRequired', 'false');
+        formData.append('OCREngine', '2');
+        formData.append('scale', 'true');
+        formData.append('detectOrientation', 'true');
         formData.append('apikey', key);
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
 
         const resp = await fetch('https://api.ocr.space/parse/image', {
           method: 'POST',
@@ -444,14 +483,16 @@ export async function performAadhaarCardOCR(imageSource) {
 
         if (resp.ok) {
           const json = await resp.json();
-          const text = json?.ParsedResults?.[0]?.ParsedText || '';
-          if (text && text.trim().length > 0) {
-            parsedText = text;
-            break;
+          if (!json.IsErroredOnProcessing) {
+            const text = json?.ParsedResults?.[0]?.ParsedText || '';
+            if (text && text.trim().length > 0) {
+              parsedText = text;
+              break;
+            }
           }
         }
       } catch (err) {
-        // Continue to next key on error/timeout
+        // Try next key
       }
     }
 

@@ -404,7 +404,7 @@ export default function ResultPage() {
       {/* Side-by-Side: Document Visual Preview & Extracted Data */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <DocumentPreview
-          fileUrl={screening.fileUrl}
+          fileUrl={screening.fileUrl || screening.cardFrontUrl || screening.documentPhoto || screening.photoUrl}
           fileName={screening.fileName}
           fileSize={screening.fileSize}
           dimensions={screening.dimensions}
