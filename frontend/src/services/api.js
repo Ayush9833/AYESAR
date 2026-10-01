@@ -2,6 +2,7 @@ import jsQR from 'jsqr';
 import { parseUniversalQR, parseAadhaarQRCode, validateVerhoeff } from '../utils/verificationEngines';
 import { performAadhaarCardOCR, cropResidentPhotoFromCard } from '../utils/cardOcrEngine';
 import { compareQrAndOcr } from '../utils/qrOcrComparisonEngine';
+import { decodeQrFromDataUrl } from '../utils/universalQrDecoder';
 
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -607,56 +608,6 @@ function fileToDataUrl(file) {
   });
 }
 
-async function decodeQrFromDataUrl(dataUrl) {
-  if (!dataUrl) return null;
-  return new Promise((resolve) => {
-    try {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const cvs = document.createElement('canvas');
-          const w = img.naturalWidth || img.width;
-          const h = img.naturalHeight || img.height;
-          if (!w || !h) return resolve(null);
-          cvs.width = w;
-          cvs.height = h;
-          const ctx = cvs.getContext('2d', { willReadFrequently: true });
-          ctx.drawImage(img, 0, 0);
-
-          // 1. Full image scan with jsQR
-          const fullData = ctx.getImageData(0, 0, w, h);
-          let code = jsQR(fullData.data, w, h, { inversionAttempts: 'attemptBoth' });
-          if (code && code.data) return resolve(code.data);
-
-          // 2. High-probability document quadrants
-          const regions = [
-            { x: Math.round(w * 0.4), y: 0, w: Math.round(w * 0.6), h: h },
-            { x: 0, y: Math.round(h * 0.35), w: w, h: Math.round(h * 0.65) },
-            { x: Math.round(w * 0.35), y: Math.round(h * 0.3), w: Math.round(w * 0.65), h: Math.round(h * 0.7) },
-            { x: 0, y: 0, w: Math.round(w * 0.6), h: h }
-          ];
-
-          for (const reg of regions) {
-            try {
-              const regData = ctx.getImageData(reg.x, reg.y, reg.w, reg.h);
-              code = jsQR(regData.data, reg.w, reg.h, { inversionAttempts: 'attemptBoth' });
-              if (code && code.data) return resolve(code.data);
-            } catch (e) {}
-          }
-          resolve(null);
-        } catch (err) {
-          resolve(null);
-        }
-      };
-      img.onerror = () => resolve(null);
-      img.src = dataUrl;
-    } catch (e) {
-      resolve(null);
-    }
-  });
-}
-
 export async function uploadScreening({ documentFile, backSideFile, selfieFile, documentType, borderCorridor, demoScenario }) {
   // If user uploaded a real document without a synthetic demo preset, connect directly to Python SATYAPAN backend
   if (!demoScenario && (documentFile || backSideFile)) {
@@ -955,6 +906,9 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       if (frontDataUrl) {
         ocrResult = await performAadhaarCardOCR(frontDataUrl);
       }
+      if (!ocrResult && backDataUrl) {
+        ocrResult = await performAadhaarCardOCR(backDataUrl);
+      }
     } catch (e) {}
 
     const cleanFileName = documentFile ? documentFile.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").toUpperCase() : null;
@@ -966,13 +920,29 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
     // 3. Resolve Real Demographics (Never use dummy names like Pooja Verma or Aarav Sharma)
     const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
     const realName = parsedQr?.name || ocrResult?.name || (!isGenericFileName ? cleanFileName : 'AUTHENTICATED TRAVELER');
-    const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || 'Registered';
-    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || (detectedDocType.includes('PAN') ? 'PAN-REGISTERED' : (detectedDocType.includes('Passport') ? 'PASS-REGISTERED' : (detectedDocType.includes('Voter') ? 'VOTER-REGISTERED' : 'DOC-VERIFIED')));
-    const realGender = parsedQr?.gender || ocrResult?.gender || 'M';
-    const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || 'Border Checkpoint Inspection Area';
+    const realFather = parsedQr?.fatherName || ocrResult?.fatherName || null;
+    const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || 'N/A';
+    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || (detectedDocType.includes('PAN') ? 'PAN-REGISTERED' : (detectedDocType.includes('Passport') ? 'PASS-REGISTERED' : (detectedDocType.includes('Voter') ? 'VOTER-REGISTERED' : 'N/A (Pending Identification)')));
+    const realGender = parsedQr?.gender || ocrResult?.gender || 'N/A';
+    const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || 'N/A (Non-Address Identity Credential)';
     const realPhoto = parsedQr?.photo || ocrResult?.photo || frontDataUrl || null;
 
-    const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 5 && !realId.includes('UNVERIFIED')));
+    // Zero-Trust Check: QR vs Printed OCR Cross-Verification & Tamper Detection
+    let comparisonResult = null;
+    let isTampered = false;
+    let tamperReasons = [];
+
+    if (parsedQr && ocrResult && (ocrResult.name || ocrResult.uid)) {
+      comparisonResult = compareQrAndOcr(parsedQr, ocrResult);
+      if (comparisonResult && comparisonResult.mismatches > 0) {
+        isTampered = true;
+        tamperReasons = comparisonResult.comparisons
+          .filter(c => c.status === 'MISMATCH')
+          .map(c => `${c.field} mismatch (QR: '${c.qrValue}' vs Card: '${c.ocrValue}')`);
+      }
+    }
+
+    const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 5 && !realId.includes('UNVERIFIED') && !realId.includes('Pending')));
 
     // Zero-Trust Check 1: Expiration check
     let isExpired = false;
@@ -1037,6 +1007,13 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       gateDecision = 'REJECT_DOCUMENT_EXPIRED';
       actionRequired = `HALT: Travel document has EXPIRED (Validity ended: ${expiryDateStr}). Under border security regulations, passage is strictly denied.`;
       failedChecks.push({ name: 'Document Temporal Validity', status: 'FAIL', detail: actionRequired });
+    } else if (isTampered) {
+      isVerified = false;
+      finalStatus = 'SUSPICIOUS';
+      riskScore = 96;
+      gateDecision = 'REJECT_TAMPERED_DOCUMENT';
+      actionRequired = `HALT: Physical card details mismatch signed QR code payload (${tamperReasons.join('; ')}). Potential counterfeit or physical tampering detected.`;
+      failedChecks.push({ name: 'Physical Card vs QR Cross-Verification', status: 'FAIL', detail: actionRequired });
     } else if (checksumError) {
       isVerified = false;
       finalStatus = 'SUSPICIOUS';
@@ -1126,6 +1103,13 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
 
       passedChecks.push({ name: 'Identity Format & Structure', status: 'PASS', detail: 'Demographic and cryptographic parameters verified.' });
       passedChecks.push({ name: 'Bilateral Treaty Compliance', status: 'PASS', detail: actionRequired });
+      if (comparisonResult && comparisonResult.matches > 0) {
+        passedChecks.push({
+          name: 'Physical Card vs QR Cross-Verification',
+          status: 'PASS',
+          detail: `All ${comparisonResult.matches} shared fields strictly consistent between QR code and printed card typography.`
+        });
+      }
       if (parsedQr) {
         passedChecks.push({ name: 'Cryptographic QR Integrity', status: 'PASS', detail: parsedQr.isSecureQR ? 'UIDAI Secure 2048-bit Cryptographic QR authenticated' : 'Official Identity 2D QR authenticated' });
       }
@@ -1169,7 +1153,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       cardBackUrl: backDataUrl,
       extractedFields: {
         name: realName,
-        fatherName: ocrResult?.fatherName || null,
+        fatherName: realFather,
         panEntityType: ocrResult?.panEntityType || null,
         idNumber: realId,
         dateOfBirth: realDob,
@@ -1252,25 +1236,23 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       ocrData: ocrResult ? {
         engine: 'Edge Multi-Language OCR',
         name: ocrResult.name || realName,
+        fatherName: ocrResult.fatherName || realFather,
         dob: ocrResult.dob || realDob,
         uid: ocrResult.uid || realId,
         gender: ocrResult.gender || realGender,
+        address: ocrResult.address || realAddress,
         documentType: detectedDocType,
         rawText: ocrResult.rawText
       } : {
         engine: 'Edge Text Extraction',
         name: realName,
+        fatherName: realFather,
         dob: realDob,
         uid: realId,
         gender: realGender,
         documentType: detectedDocType
       },
-      comparisonResult: parsedQr ? compareQrAndOcr(parsedQr, {
-        name: realName,
-        dob: realDob,
-        uid: realId,
-        gender: realGender
-      }) : null,
+      comparisonResult: comparisonResult || (parsedQr && ocrResult ? compareQrAndOcr(parsedQr, ocrResult) : null),
       auditHash: '0x' + Math.random().toString(16).substring(2, 10).toUpperCase()
     };
 

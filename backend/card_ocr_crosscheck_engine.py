@@ -168,17 +168,26 @@ class CardOcrCrossCheckEngine:
         masked_match = re.search(r'\b([xX]{4}[\s\-]?[xX]{4}[\s\-]?\d{4}|[xX]{8}\d{4})\b', full_text)
         nepal_id = re.search(r'\b\d{2,4}[-\s\/]\d{2,5}[-\s\/]\d{2,6}\b', full_text)
 
-        # 2. Look for DOB pattern: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD
-        dob_match = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.](0[1-9]|1[0-2])[\/\-\.](19\d\d|20\d\d)\b', full_text)
-        iso_dob = re.search(r'\b(19\d\d|20\d\d)[-\/\.](0[1-9]|1[0-2])[-\/\.](0[1-9]|[12]\d|3[01])\b', full_text)
+        # 2. Look for DOB pattern: DD/MM/YYYY, DD-MM-YYYY, DD.MM.YYYY, YYYY-MM-DD (with whitespace tolerance)
+        dob_match = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.\s]+(0[1-9]|1[0-2])[\/\-\.\s]+(19\d\d|20\d\d)\b', full_text)
+        iso_dob = re.search(r'\b(19\d\d|20\d\d)[-\/\.\s]+(0[1-9]|1[0-2])[-\/\.\s]+(0[1-9]|[12]\d|3[01])\b', full_text)
         if dob_match:
-            fields["printed_dob"] = dob_match.group(0).replace(".", "/")
+            d, m, y = dob_match.group(1), dob_match.group(2), dob_match.group(3)
+            fields["printed_dob"] = f"{d}/{m}/{y}"
         elif iso_dob:
-            fields["printed_dob"] = iso_dob.group(0)
+            y, m, d = iso_dob.group(1), iso_dob.group(2), iso_dob.group(3)
+            fields["printed_dob"] = f"{d}/{m}/{y}"
         else:
-            yob_match = re.search(r'(?:Year of Birth|YOB|DOB|जन्म)[\s\:\-]+(\d{4})', full_text, re.IGNORECASE)
-            if yob_match:
-                fields["printed_dob"] = f"01/01/{yob_match.group(1)}"
+            # Fallback for labeled DOB
+            labeled_dob = re.search(r'(?:DOB|Birth|जन्म|Date of Birth)[\s\:\;\/\-]+([0-9\/\-\.\s]{8,12})', full_text, re.I)
+            if labeled_dob:
+                clean_d = re.sub(r'[^0-9]', '', labeled_dob.group(1))
+                if len(clean_d) == 8:
+                    fields["printed_dob"] = f"{clean_d[:2]}/{clean_d[2:4]}/{clean_d[4:]}"
+            if not fields["printed_dob"]:
+                yob_match = re.search(r'(?:Year of Birth|YOB|जन्म)[\s\:\-]+(\d{4})', full_text, re.I)
+                if yob_match:
+                    fields["printed_dob"] = f"01/01/{yob_match.group(1)}"
 
         # Driving Licence Detection (Ministry of Road Transport & Highways)
         is_dl_doc = bool(re.search(r'(?:DRIVING\s*LICEN[CS]E|MOTOR\s*DRIVING|STATE\s*MOTOR|\bDL\s*No[\:\;\s]|\bAUTHORISATi?ON\s*T[0O]\s*DRIVE|\bFORM\s*7\b)', full_text, re.I))
@@ -297,49 +306,68 @@ class CardOcrCrossCheckEngine:
                 fields["pan_entity_type"] = 'Individual (Person)'
 
             # Extract Cardholder Name & Father's Name on PAN Card
-            bad_keywords = {'INCOME', 'NNCOME', 'NCOME', 'TAX', 'DEPARTMENT', 'GOVT', 'INDIA', 'PERMANENT', 'ACCOUNT', 'NUMBER', 'CARD', 'SIGNATURE', 'SIGNATURO', 'DATE', 'BIRTH', 'BLNTH', 'DOB', 'NAME', 'FATHER', 'FATHERS', 'नाम', 'पिता', pan_number, re.sub(r'[^A-Za-z]', '', pan_number).upper()}
+            noise_regex = re.compile(r'^(INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|NUMBER|CARD|SIGNATURE|APPLICATION|DIGITALLY|PHYSICALLY|VALID|UNLESS|TELE|ESE|AER|FATRT|HRT|TTTR|SIREN|FATS|ARA|PROR|FRDI|AU1|HG|311475R|27022026|27124128|D;TRUTAR|DAULASHND)', re.I)
+            label_regex = re.compile(r'^(NAME|नाम|FATHER|FATHERS|FATHER\'S|पिता|DOB|DATE|BIRTH|OF BIRTH|DETE|BINN|EURIU|FARHERS|NANTE|STR\s*\/\s*NAME|T\s*45T|F\s*51)', re.I)
 
             def is_valid_pan_name(s: str) -> bool:
                 if not s:
                     return False
-                if re.search(r'(?:Date|Birth|Blnth|Income|Tax|India|Signature|Signaturo|Permanent|Account)', s, re.I):
+                clean = re.sub(r'[^A-Za-z\s]', ' ', s).strip()
+                words = [w for w in clean.split() if len(w) >= 2]
+                if not (1 <= len(words) <= 4):
                     return False
-                clean = re.sub(r'[^A-Za-z\s]', '', s).strip()
-                words = clean.split()
-                if not (1 <= len(words) <= 5):
+                if any(noise_regex.search(w) or label_regex.search(w) for w in words):
                     return False
-                if any(w.upper() in bad_keywords for w in words):
+                # Must contain at least one vowel
+                if not any(re.search(r'[aeiouy]', w, re.I) for w in words):
                     return False
                 return len(clean) >= 3
 
+            # 1. First scan for labeled lines
             for i, line in enumerate(lines):
                 clean = line.strip()
                 # Father's name search
-                if re.search(r'(?:Father[\'s]*\s*Name|पिता\s*का\s*नाम)', clean, re.IGNORECASE):
-                    sub = re.sub(r'^(?:Father[\'s]*\s*Name|पिता\s*का\s*नाम)[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
+                if re.search(r'(?:Father|पिता|Farhers)', clean, re.IGNORECASE):
+                    sub = re.sub(r'.*?(?:Father[\'s]*\s*Name|पिता\s*का\s*नाम|Farhers\s*Nante|Father)[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
                     if is_valid_pan_name(sub):
                         fields["father_name"] = sub.title()
-                    elif i + 1 < len(lines) and is_valid_pan_name(lines[i + 1].strip()):
-                        fields["father_name"] = lines[i + 1].strip().title()
-                # Cardholder name search (explicitly exclude father line)
-                elif re.search(r'(?:^|\b)(?:Name|नाम)(?:\s*\/\s*Name)?(?:\b|$)', clean, re.IGNORECASE) and not re.search(r'(?:Father|पिता|Account|Department)', clean, re.IGNORECASE):
-                    sub = re.sub(r'^(?:Name|नाम)(?:\s*\/\s*Name)?[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
+                    else:
+                        for j in range(i + 1, min(len(lines), i + 3)):
+                            nxt = lines[j].strip()
+                            if is_valid_pan_name(nxt):
+                                fields["father_name"] = nxt.title()
+                                break
+                # Cardholder name search (explicitly exclude father line & headers)
+                elif re.search(r'(?:Name|नाम)', clean, re.IGNORECASE) and not re.search(r'(?:Father|पिता|Account|Permanent|Department|GOVT)', clean, re.IGNORECASE):
+                    sub = re.sub(r'.*?(?:Name|नाम)[\s\:\/\-]*', '', clean, flags=re.IGNORECASE).strip()
                     if is_valid_pan_name(sub):
                         fields["printed_name"] = sub.title()
-                    elif i + 1 < len(lines) and is_valid_pan_name(lines[i + 1].strip()):
-                        fields["printed_name"] = lines[i + 1].strip().title()
+                    else:
+                        for j in range(i + 1, min(len(lines), i + 3)):
+                            nxt = lines[j].strip()
+                            if is_valid_pan_name(nxt):
+                                fields["printed_name"] = nxt.title()
+                                break
 
-            # Positional fallback if labels were faint or unsegmented
+            # 2. Positional resolution: lines after the PAN number
+            valid_candidates = []
+            past_pan = False
+            for line in lines:
+                clean = line.strip()
+                if pan_number and pan_number in clean:
+                    past_pan = True
+                    continue
+                if is_valid_pan_name(clean):
+                    valid_candidates.append((clean.title(), past_pan))
+
+            after_pan = [c[0] for c in valid_candidates if c[1]]
             if not fields["printed_name"]:
-                candidates = []
-                for line in lines:
-                    c = line.strip()
-                    if is_valid_pan_name(c):
-                        candidates.append(c.title())
-                if candidates:
-                    fields["printed_name"] = candidates[0]
-                    if not fields["father_name"] and len(candidates) > 1:
-                        fields["father_name"] = candidates[1]
+                fields["printed_name"] = after_pan[0] if after_pan else (valid_candidates[0][0] if valid_candidates else None)
+            if not fields["father_name"]:
+                if len(after_pan) > 1:
+                    fields["father_name"] = after_pan[1]
+                elif len(valid_candidates) > 1:
+                    fields["father_name"] = valid_candidates[1][0]
 
             # 5th Character Surname Initial Integrity Check
             if fields["printed_name"] and len(pan_number) >= 5:
@@ -857,26 +885,29 @@ class CardOcrCrossCheckEngine:
                     is_tampered = True
                     tamper_flags.append(f"DOB Mismatch: Printed ('{printed_dob}') != Signed QR ('{qr_dob}')")
 
-        qr_uid = qr_data.get("idNumber") or qr_data.get("uid") or ""
+        qr_uid = (qr_data.get("id_number") or qr_data.get("idNumber") or qr_data.get("uid") or
+                  qr_data.get("pan_number") or qr_data.get("epic_number") or 
+                  qr_data.get("cid_number") or qr_data.get("certificate_number") or
+                  qr_data.get("passport_number") or "")
         qr_ref = qr_data.get("reference_id") or qr_data.get("referenceid") or ""
         printed_uid = printed_data.get("printed_uid") or ""
 
-        target_last4 = None
-        if qr_uid:
-            target_last4 = qr_uid[-4:]
-        elif qr_ref and len(qr_ref) >= 4:
-            target_last4 = qr_ref[:4]
+        if qr_uid and printed_uid:
+            clean_printed = re.sub(r'[^A-Z0-9]', '', printed_uid.upper())
+            clean_qr = re.sub(r'[^A-Z0-9]', '', qr_uid.upper())
+            is_aadhaar_uid = (len(clean_printed) == 12 or "XXXX" in printed_uid.upper())
 
-        if target_last4 and printed_uid:
-            clean_printed_last4 = printed_uid[-4:]
-            clean_qr_last4 = target_last4
-            match = (clean_qr_last4 == clean_printed_last4)
+            match = False
+            if is_aadhaar_uid:
+                match = (clean_qr[-4:] == clean_printed[-4:])
+            else:
+                match = (clean_qr == clean_printed) or (clean_qr in clean_printed) or (clean_printed in clean_qr)
             
             if match:
                 comparisons.append({
-                    "field": "Aadhaar UID / Reference Check",
-                    "printed_text": f"XXXX-XXXX-{clean_printed_last4}",
-                    "qr_authenticated_text": f"XXXX-XXXX-{clean_qr_last4} (UIDAI Certified)",
+                    "field": "Document Identity Number Check",
+                    "printed_text": printed_uid,
+                    "qr_authenticated_text": f"{qr_uid} (Digital QR Certified)",
                     "similarity_score": 1.0,
                     "is_match": True,
                     "verdict": "VERIFIED_IDENTICAL"
@@ -884,15 +915,15 @@ class CardOcrCrossCheckEngine:
             else:
                 is_tampered = True
                 comparisons.append({
-                    "field": "Aadhaar UID / Reference Check",
-                    "printed_text": f"XXXX-XXXX-{clean_printed_last4}",
-                    "qr_authenticated_text": f"Token/Last-4: {clean_qr_last4} (UIDAI Certified)",
+                    "field": "Document Identity Number Check",
+                    "printed_text": printed_uid,
+                    "qr_authenticated_text": f"{qr_uid} (Digital QR Certified)",
                     "similarity_score": 0.0,
                     "is_match": False,
-                    "verdict": "TOKEN_MISMATCH_SUSPECTED"
+                    "verdict": "ID_MISMATCH_SUSPECTED"
                 })
                 tamper_flags.append(
-                    f"UID Sequence Mismatch: Printed document ends in '{clean_printed_last4}', but cryptographic QR is certified for '{clean_qr_last4}'. Possible QR-swap forgery or Virtual ID (VID) discrepancy."
+                    f"Document ID Mismatch: Printed document reads '{printed_uid}', but digital QR encodes '{qr_uid}'. Possible QR-swap forgery or altered ID card."
                 )
 
         overall_status = "TAMPER_DETECTED" if is_tampered else ("AUTHENTIC_MATCH" if comparisons else "INSUFFICIENT_DATA")

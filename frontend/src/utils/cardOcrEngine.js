@@ -285,22 +285,22 @@ export function parseUniversalDocumentOCR(rawText) {
     }
   }
 
-  // 4. Dates: DOB and Expiration
-  const dobMatch = rawText.match(/(?:DOB|Birth|जन्म\s*तिथि|Year\s*of\s*Birth|Date\s*of\s*Birth)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\-\/\.]\d{2}[\-\/\.]\d{2}|\d{4})/i);
+  // 4. Dates: DOB and Expiration (Whitespace and separator tolerant)
+  const dobMatch = rawText.match(/\b(0[1-9]|[12]\d|3[01])[\/\-\.\s]+(0[1-9]|1[0-2])[\/\-\.\s]+(19\d\d|20\d\d)\b/);
+  const isoDobMatch = rawText.match(/\b(19\d\d|20\d\d)[\/\-\.\s]+(0[1-9]|1[0-2])[\/\-\.\s]+(0[1-9]|[12]\d|3[01])\b/);
   if (dobMatch) {
-    dob = dobMatch[1].replace(/[\.\-]/g, '/');
+    dob = `${dobMatch[1]}/${dobMatch[2]}/${dobMatch[3]}`;
+  } else if (isoDobMatch) {
+    dob = `${isoDobMatch[3]}/${isoDobMatch[2]}/${isoDobMatch[1]}`;
   } else {
-    const dateMatch = rawText.match(/\b(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4})\b/);
-    if (dateMatch) dob = dateMatch[1].replace(/[\.\-]/g, '/');
-  }
-  if (!dob) {
     const ageMatch = rawText.match(/(?:Age|आयु)[:\s\-]*(\d{1,3})/i);
     if (ageMatch) dob = `Age: ${ageMatch[1]} Years`;
   }
 
-  const expMatch = rawText.match(/(?:Expiry|Valid\s*Till|Expires|Valid\s*Upto)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\-\/\.]\d{2}[\-\/\.]\d{2}|\d{4})/i);
+  const expMatch = rawText.match(/(?:Expiry|Valid\s*Till|Expires|Valid\s*Upto)[:\s\-\/]*([0-9\/\-\.\s]{8,12})/i);
   if (expMatch) {
-    expiryDate = expMatch[1].replace(/[\.\-]/g, '/');
+    const cleanExp = expMatch[1].replace(/[\s\.]/g, '/').replace(/\/+/g, '/').trim();
+    expiryDate = cleanExp;
   }
 
   // 5. Gender
@@ -341,51 +341,125 @@ export function parseUniversalDocumentOCR(rawText) {
     if (genMatch) uid = genMatch[1];
   }
 
-  // 10. Robust Name Extraction with Blacklist Filter
-  const blacklist = [
-    'GOVERNMENT OF INDIA', 'BHARAT SARKAR', 'UNIQUE IDENTIFICATION', 
-    'AUTHORITY OF INDIA', 'ENROLLMENT', 'AADHAAR', 'MERA AADHAAR', 
-    'HELP', 'TO', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'WIFE',
-    'DOB', 'DATE OF BIRTH', 'YEAR OF BIRTH', 'INDIA', 'GOVT', 'PEHCHAAN',
-    'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD', 'SIGNATURE',
-    'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE',
-    'ELECTION COMMISSION OF INDIA', 'ELECTION COMMISSION', 'ELECTORAL PHOTO',
-    'IDENTITY CARD', 'VOTER ID', 'VOTER', 'ELECTOR', 'EPIC', 'ROYAL GOVERNMENT',
-    'NEPAL GOVERNMENT', 'CITIZENSHIP CERTIFICATE', 'NEPAL CITIZENSHIP', 'BIRTH CERTIFICATE',
-    'MUNICIPAL CORPORATION', 'SSB BORDER', 'BORDER TRANSIT', 'ENTRY PERMIT',
-    'IMMIGRATION', 'TOURIST VISA', 'UNITED KINGDOM', 'UNITED STATES', 'UNION OF INDIA'
-  ];
+  // 10. Robust Document-Specific Name Extraction
+  const isPan = documentType.includes('PAN');
 
-  if (!name) {
-    const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\s\.]+)/i);
-    if (labeledNameMatch) {
-      const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-      if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-        name = cand;
+  if (isPan) {
+    // Dedicated PAN Card Parser (filters out Hindi OCR misreads like TELE, ESE AER, fatrT, HRT)
+    const panNoiseRegex = /^(INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|NUMBER|CARD|SIGNATURE|APPLICATION|DIGITALLY|PHYSICALLY|VALID|UNLESS|TELE|ESE|AER|FATRT|HRT|TTTR|SIREN|FATS|ARA|PROR|FRDI|AU1|HG|311475R|27022026|27124128|D;TRUTAR|DAULASHND)/i;
+    const panLabelRegex = /^(NAME|नाम|FATHER|FATHERS|FATHER\'S|पिता|DOB|DATE|BIRTH|OF BIRTH|DETE|BINN|EURIU|FARHERS|NANTE|STR\s*\/\s*NAME|T\s*45T|F\s*51)/i;
+
+    let labeledName = null;
+    let labeledFather = null;
+
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      // Check Father label
+      if (/(?:Father|पिता|Farhers)/i.test(l)) {
+        const rest = l.replace(/.*?(?:Father\'?s?\s*Name|पिता\s*का\s*नाम|Farhers\s*Nante|Father)[\s\:\/\-]*/i, '').trim();
+        const cleanRest = rest.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest)) {
+          labeledFather = cleanRest;
+        } else {
+          for (let j = i + 1; j < Math.min(lines.length, i + 3); j++) {
+            const nextClean = lines[j].replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean)) {
+              labeledFather = nextClean;
+              break;
+            }
+          }
+        }
+      }
+      // Check Cardholder Name label (avoid father & headers)
+      else if (/(?:Name|नाम)/i.test(l) && !/(?:Father|पिता|Account|Permanent|Department|GOVT)/i.test(l)) {
+        const rest = l.replace(/.*?(?:Name|नाम)[\s\:\/\-]*/i, '').trim();
+        const cleanRest = rest.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest)) {
+          labeledName = cleanRest;
+        } else {
+          for (let j = i + 1; j < Math.min(lines.length, i + 3); j++) {
+            const nextClean = lines[j].replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean)) {
+              labeledName = nextClean;
+              break;
+            }
+          }
+        }
       }
     }
-  }
 
-  if (!fatherName) {
-    const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|Father)[:\s\-]*([A-Za-z\s\.]+)/i);
-    if (fMatch) {
-      const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-      if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-        fatherName = cand;
+    const validNameLines = [];
+    let pastPan = false;
+    for (const line of lines) {
+      const clean = line.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+      if (uid && line.includes(uid)) {
+        pastPan = true;
+        continue;
+      }
+      if (panNoiseRegex.test(clean) || panLabelRegex.test(clean)) continue;
+      if (clean.length < 3) continue;
+      if (/^[0-9\/\-\.\s]+$/.test(line)) continue;
+      
+      const words = clean.split(' ').filter(w => w.length >= 2);
+      if (words.length >= 1 && words.length <= 4) {
+        const hasVowels = words.every(w => /[aeiouy]/i.test(w));
+        if (hasVowels && !panNoiseRegex.test(clean) && !panLabelRegex.test(clean)) {
+          validNameLines.push({ text: clean, pastPan });
+        }
       }
     }
-  }
 
-  // Check lines above DOB
-  if (!name) {
-    let dobLineIndex = lines.findIndex(l => /DOB|Birth|जन्म|Age|आयु/i.test(l));
-    if (dobLineIndex > 0) {
-      for (let j = dobLineIndex - 1; j >= 0; j--) {
-        const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
-        const upper = cand.toUpperCase();
-        if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
+    const afterPanCandidates = validNameLines.filter(v => v.pastPan).map(v => v.text);
+    name = labeledName || afterPanCandidates[0] || validNameLines[0]?.text || null;
+    fatherName = labeledFather || afterPanCandidates[1] || validNameLines[1]?.text || null;
+    address = 'N/A (Non-Address Identity Credential)';
+  } else {
+    // General Document Name Extraction with Blacklist Filter
+    const blacklist = [
+      'GOVERNMENT OF INDIA', 'BHARAT SARKAR', 'UNIQUE IDENTIFICATION', 
+      'AUTHORITY OF INDIA', 'ENROLLMENT', 'AADHAAR', 'MERA AADHAAR', 
+      'HELP', 'TO', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'WIFE',
+      'DOB', 'DATE OF BIRTH', 'YEAR OF BIRTH', 'INDIA', 'GOVT', 'PEHCHAAN',
+      'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD', 'SIGNATURE',
+      'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE',
+      'ELECTION COMMISSION OF INDIA', 'ELECTION COMMISSION', 'ELECTORAL PHOTO',
+      'IDENTITY CARD', 'VOTER ID', 'VOTER', 'ELECTOR', 'EPIC', 'ROYAL GOVERNMENT',
+      'NEPAL GOVERNMENT', 'CITIZENSHIP CERTIFICATE', 'NEPAL CITIZENSHIP', 'BIRTH CERTIFICATE',
+      'MUNICIPAL CORPORATION', 'SSB BORDER', 'BORDER TRANSIT', 'ENTRY PERMIT',
+      'IMMIGRATION', 'TOURIST VISA', 'UNITED KINGDOM', 'UNITED STATES', 'UNION OF INDIA'
+    ];
+
+    if (!name) {
+      const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\s\.]+)/i);
+      if (labeledNameMatch) {
+        const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+        if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
           name = cand;
-          break;
+        }
+      }
+    }
+
+    if (!fatherName) {
+      const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|Father)[:\s\-]*([A-Za-z\s\.]+)/i);
+      if (fMatch) {
+        const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+        if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+          fatherName = cand;
+        }
+      }
+    }
+
+    // Check lines above DOB
+    if (!name) {
+      let dobLineIndex = lines.findIndex(l => /DOB|Birth|जन्म|Age|आयु/i.test(l));
+      if (dobLineIndex > 0) {
+        for (let j = dobLineIndex - 1; j >= 0; j--) {
+          const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
+          const upper = cand.toUpperCase();
+          if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
+            name = cand;
+            break;
+          }
         }
       }
     }
@@ -399,12 +473,12 @@ export function parseUniversalDocumentOCR(rawText) {
     }
   }
 
-  // 8. Indian 6-digit Pincode
+  // Indian 6-digit Pincode
   let pincode = null;
   const pinMatch = rawText.match(/\b([1-9][0-9]{5})\b/);
   if (pinMatch) pincode = pinMatch[1];
 
-  // 9. Care of / Guardian / Spouse name
+  // Care of / Guardian / Spouse name
   let careOf = null;
   const coMatch = rawText.match(/(?:C\/O|S\/O|W\/O|D\/O|आत्मज|पुत्र|पत्नी)[:\s]*([A-Za-z\s\.]+)/i);
   if (coMatch) careOf = coMatch[1].trim();

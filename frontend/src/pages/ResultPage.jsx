@@ -221,16 +221,16 @@ export default function ResultPage() {
       {screening.qrData && (
         <QrOcrComparisonCard
           qrData={screening.qrData}
-          ocrData={{
+          ocrData={screening.ocrData || screening.extractedFields || {
             name: screening.applicantName,
             dob: screening.dateOfBirth,
             uid: screening.idNumber,
             gender: screening.gender,
             documentType: screening.documentType
           }}
-          comparisonResult={compareQrAndOcr(
+          comparisonResult={screening.comparisonResult || compareQrAndOcr(
             screening.qrData,
-            {
+            screening.ocrData || screening.extractedFields || {
               name: screening.applicantName,
               dob: screening.dateOfBirth,
               uid: screening.idNumber

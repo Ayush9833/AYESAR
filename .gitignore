@@ -22,6 +22,10 @@ build/
 Thumbs.db
 
 # Temp runtime image dumps
+*.jpg
+*.png
+*.traineddata
 backend/*.jpg
 backend/*.png
 backend/python
+frontend/test_*.cjs
