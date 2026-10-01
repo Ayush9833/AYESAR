@@ -379,9 +379,14 @@ class CardOcrCrossCheckEngine:
             return fields
 
         # Detect Document Type (handles OCR noise like NNCOME, NCOME, PERMANENT ACCOUNT)
+        has_voter_kw = bool(re.search(r'(?:ELECTION|ELECTOR|VOTER|निर्वाचन|मतदाता|\bEPIC\b)', full_text, re.I))
+        has_nepal_kw = bool(re.search(r'(?:CITIZENSHIP|NEPAL|NAGARIKTA|नागरिकता)', full_text, re.I))
+        has_bhutan_kw = bool(re.search(r'(?:BHUTAN|DZONGKHAG|\bCID\b)', full_text, re.I))
+        has_passport_kw = bool(re.search(r'(?:PASSPORT|P<IND|P<NPL|P<BTN)', full_text, re.I))
+
         is_pan_card = bool(
-            (pan_recovered and not is_dl_doc) or
-            re.search(r'(?:(?:INCOME|NNCOME|NCOME)\s*TAX|आयकर|PERMANENT\s*ACCOUNT)', full_text, re.I)
+            not (has_voter_kw or has_nepal_kw or has_bhutan_kw or has_passport_kw or is_dl_doc) and
+            (pan_recovered or re.search(r'(?:(?:INCOME|NNCOME|NCOME)\s*TAX|आयकर|PERMANENT\s*ACCOUNT)', full_text, re.I))
         )
 
         if is_pan_card:
