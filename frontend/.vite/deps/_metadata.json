@@ -1,0 +1,73 @@
+{
+  "hash": "ad2f7913",
+  "configHash": "553119c8",
+  "lockfileHash": "f9007a14",
+  "browserHash": "6548e425",
+  "optimized": {
+    "react": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/react/index.js",
+      "file": "react.js",
+      "fileHash": "c0975770",
+      "needsInterop": true
+    },
+    "react-dom/client": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/react-dom/client.js",
+      "file": "react-dom_client.js",
+      "fileHash": "bc441cd7",
+      "needsInterop": true
+    },
+    "react-router-dom": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/react-router-dom/dist/index.js",
+      "file": "react-router-dom.js",
+      "fileHash": "d9c76eb7",
+      "needsInterop": false
+    },
+    "lucide-react": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/lucide-react/dist/esm/lucide-react.mjs",
+      "file": "lucide-react.js",
+      "fileHash": "7af6270c",
+      "needsInterop": false
+    },
+    "canvas-confetti": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/canvas-confetti/dist/confetti.module.mjs",
+      "file": "canvas-confetti.js",
+      "fileHash": "d6e899dc",
+      "needsInterop": false
+    },
+    "jsqr": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/jsqr/dist/jsQR.js",
+      "file": "jsqr.js",
+      "fileHash": "78e22e4a",
+      "needsInterop": true
+    },
+    "qrcode": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/qrcode/lib/browser.js",
+      "file": "qrcode.js",
+      "fileHash": "bb849af7",
+      "needsInterop": true
+    },
+    "@zxing/library": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/@zxing/library/esm/index.js",
+      "file": "@zxing_library.js",
+      "fileHash": "28baeb10",
+      "needsInterop": false
+    },
+    "pako": {
+      "src": "../../../../../../../.gemini/antigravity/scratch/verishield/frontend/node_modules/pako/dist/pako.mjs",
+      "file": "pako.js",
+      "fileHash": "b84cdd8b",
+      "needsInterop": false
+    }
+  },
+  "chunks": {
+    "chunk-I5UR64RM": {
+      "file": "chunk-I5UR64RM.js"
+    },
+    "chunk-H6Z2J3XH": {
+      "file": "chunk-H6Z2J3XH.js"
+    },
+    "chunk-DC5AMYBS": {
+      "file": "chunk-DC5AMYBS.js"
+    }
+  }
+}
