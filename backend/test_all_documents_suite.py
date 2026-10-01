@@ -4,6 +4,15 @@ Comprehensive Verification Suite: Tests all document types against the SATYAPAN 
 
 import os
 import sys
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 import base64
 import json
 import urllib.request
