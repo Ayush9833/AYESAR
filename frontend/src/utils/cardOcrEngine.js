@@ -13,6 +13,8 @@
  * - OCR.space API Integration with high-res pre-processing
  */
 
+import Tesseract from 'tesseract.js';
+
 /**
  * Analyzes visual image quality metrics to identify blur, low resolution, or glare
  */
@@ -183,7 +185,31 @@ export function parseUniversalDocumentOCR(rawText) {
     documentType = 'Voter ID';
   }
 
-  // 1. Date of Birth
+  // 1. Universal PAN Card Detection & Check
+  const panMatch = rawText.replace(/[\s\-\.]+/g, ' ').match(/\b([A-Z]{5}\s*\d{4}\s*[A-Z])\b/i);
+  let panEntityType = null;
+  if (panMatch) {
+    const cleanedPan = panMatch[1].replace(/\s+/g, '').toUpperCase();
+    if (!uid) uid = cleanedPan;
+    if (documentType === 'Unknown') documentType = 'PAN Card';
+    // 4th character entity type
+    const entityChar = cleanedPan[3];
+    const entityMap = {
+      'P': 'Individual (Resident / NRI)',
+      'C': 'Company / Corporate',
+      'H': 'Hindu Undivided Family (HUF)',
+      'F': 'Partnership Firm / LLP',
+      'A': 'Association of Persons (AOP)',
+      'T': 'Trust / Educational Entity',
+      'B': 'Body of Individuals (BOI)',
+      'L': 'Local Authority',
+      'J': 'Artificial Juridical Person',
+      'G': 'Government Agency'
+    };
+    panEntityType = entityMap[entityChar] || 'Individual';
+  }
+
+  // 2. Date of Birth
   let dob = null;
   const dobMatch = rawText.match(/(?:DOB|Birth|जन्म\s*तिथि|Year\s*of\s*Birth|Date\s*of\s*Birth)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4})/i);
   if (dobMatch) {
@@ -193,32 +219,40 @@ export function parseUniversalDocumentOCR(rawText) {
     if (dateMatch) dob = dateMatch[1].replace(/[\.\-]/g, '/');
   }
 
-  // 2. Expiration Date (for Passports, Visas, Driving Licences)
+  // 3. Expiration Date (for Passports, Visas, Driving Licences)
   let expiryDate = null;
   const expMatch = rawText.match(/(?:Expiry|Valid\s*Till|Expires|Valid\s*Upto)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4})/i);
   if (expMatch) {
     expiryDate = expMatch[1].replace(/[\.\-]/g, '/');
   }
 
-  // 3. Gender
+  // 4. Gender
   let gender = null;
   if (/\b(FEMALE|महिला)\b/i.test(rawText)) gender = 'Female';
   else if (/\b(MALE|पुरुष)\b/i.test(rawText)) gender = 'Male';
   else if (/\b(TRANSGENDER)\b/i.test(rawText)) gender = 'Transgender';
 
-  // 4. Document / ID Number
-  let uid = null;
-  if (documentType === 'Aadhaar Card' || !uid) {
+  // 5. Document / ID Number Fallbacks
+  if (!uid && (documentType === 'Aadhaar Card' || documentType === 'Unknown')) {
     const uidMatch = rawText.match(/\b(\d{4}\s*\d{4}\s*\d{4}|[Xx\*\.]{4}\s*[Xx\*\.]{4}\s*\d{4})\b/);
-    if (uidMatch) uid = uidMatch[1].replace(/\s+/g, ' ');
+    if (uidMatch) {
+      uid = uidMatch[1].replace(/\s+/g, ' ');
+      if (documentType === 'Unknown') documentType = 'Aadhaar Card';
+    }
   }
-  if (!uid && documentType === 'PAN Card') {
-    const panMatch = rawText.match(/\b([A-Z]{5}\d{4}[A-Z])\b/);
-    if (panMatch) uid = panMatch[1];
+  if (!uid && (documentType === 'Driving Licence' || documentType === 'Unknown')) {
+    const dlMatch = rawText.match(/\b([A-Z]{2}[0-9]{2}\s?[0-9]{11})\b/i);
+    if (dlMatch) {
+      uid = dlMatch[1].replace(/\s+/g, '').toUpperCase();
+      if (documentType === 'Unknown') documentType = 'Driving Licence';
+    }
   }
-  if (!uid && documentType === 'Passport') {
+  if (!uid && (documentType === 'Passport' || documentType === 'Unknown')) {
     const passMatch = rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
-    if (passMatch) uid = passMatch[1].toUpperCase();
+    if (passMatch) {
+      uid = passMatch[1].toUpperCase();
+      if (documentType === 'Unknown') documentType = 'Passport';
+    }
   }
   if (!uid) {
     // Generic identifier (alphanumeric 8-16 chars)
@@ -226,8 +260,9 @@ export function parseUniversalDocumentOCR(rawText) {
     if (genMatch) uid = genMatch[1];
   }
 
-  // 5. Name extraction
+  // 6. Name and Father's Name extraction
   let name = null;
+  let fatherName = null;
   let dobLineIndex = -1;
   for (let i = 0; i < lines.length; i++) {
     if (/DOB|Birth|जन्म/i.test(lines[i])) {
@@ -241,10 +276,26 @@ export function parseUniversalDocumentOCR(rawText) {
     'AUTHORITY OF INDIA', 'ENROLLMENT', 'AADHAAR', 'MERA AADHAAR', 
     'HELP', 'TO', 'MALE', 'FEMALE', 'FATHER', 'MOTHER', 'HUSBAND', 'WIFE',
     'DOB', 'DATE OF BIRTH', 'YEAR OF BIRTH', 'INDIA', 'GOVT', 'PEHCHAAN',
-    'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD'
+    'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD', 'SIGNATURE',
+    'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE'
   ];
 
-  if (dobLineIndex > 0) {
+  if (documentType === 'PAN Card' && dobLineIndex > 0) {
+    const candidateLines = [];
+    for (let k = 0; k < dobLineIndex; k++) {
+      const cand = lines[k].replace(/[^A-Za-z\s\.]/g, '').trim();
+      const upper = cand.toUpperCase();
+      if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
+        candidateLines.push(cand);
+      }
+    }
+    if (candidateLines.length >= 2) {
+      name = candidateLines[0];
+      fatherName = candidateLines[1];
+    } else if (candidateLines.length === 1) {
+      name = candidateLines[0];
+    }
+  } else if (dobLineIndex > 0) {
     for (let j = dobLineIndex - 1; j >= 0; j--) {
       const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
       const upper = cand.toUpperCase();
@@ -263,19 +314,19 @@ export function parseUniversalDocumentOCR(rawText) {
     }
   }
 
-  // 6. Address extraction (for Aadhaar Back, Passports, DL)
+  // 7. Address extraction (for Aadhaar Back, Passports, DL)
   let address = null;
   const addressMatch = rawText.match(/(?:Address|पता)[:\s\-]*([\s\S]{10,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|$)/i);
   if (addressMatch) {
     address = addressMatch[1].replace(/\n+/g, ', ').replace(/\s+/g, ' ').trim();
   }
 
-  // 7. Indian 6-digit Pincode
+  // 8. Indian 6-digit Pincode
   let pincode = null;
   const pinMatch = rawText.match(/\b([1-9][0-9]{5})\b/);
   if (pinMatch) pincode = pinMatch[1];
 
-  // 8. Care of / Guardian / Spouse name
+  // 9. Care of / Guardian / Spouse name
   let careOf = null;
   const coMatch = rawText.match(/(?:C\/O|S\/O|W\/O|D\/O|आत्मज|पुत्र|पत्नी)[:\s]*([A-Za-z\s\.]+)/i);
   if (coMatch) careOf = coMatch[1].trim();
@@ -283,6 +334,8 @@ export function parseUniversalDocumentOCR(rawText) {
   return {
     documentType,
     name: name || (careOf ? `${careOf} (C/O)` : null),
+    fatherName: fatherName || null,
+    panEntityType: panEntityType || null,
     dob,
     gender,
     uid,
@@ -300,7 +353,7 @@ export function parseUniversalDocumentOCR(rawText) {
 export const parseAadhaarOCRText = parseUniversalDocumentOCR;
 
 /**
- * Performs asynchronous OCR extraction using OCR.space API with fallback
+ * Performs asynchronous OCR extraction using OCR.space API with offline Tesseract fallback
  */
 export async function performAadhaarCardOCR(imageSource) {
   try {
@@ -380,7 +433,7 @@ export async function performAadhaarCardOCR(imageSource) {
         formData.append('apikey', key);
 
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
+        const timeoutId = setTimeout(() => controller.abort(), 3500);
 
         const resp = await fetch('https://api.ocr.space/parse/image', {
           method: 'POST',
@@ -399,6 +452,38 @@ export async function performAadhaarCardOCR(imageSource) {
         }
       } catch (err) {
         // Continue to next key on error/timeout
+      }
+    }
+
+    // Client-side offline Tesseract.js fallback if OCR.space is throttled or offline
+    if (!parsedText && canvasForCrop) {
+      try {
+        console.info('[OCR Engine] Cloud OCR unavailable or rate-limited. Activating local Tesseract.js engine...');
+        const tessCvs = document.createElement('canvas');
+        tessCvs.width = canvasForCrop.width;
+        tessCvs.height = canvasForCrop.height;
+        const tCtx = tessCvs.getContext('2d');
+        tCtx.drawImage(canvasForCrop, 0, 0);
+
+        // Preprocess: convert to grayscale for high contrast text recognition
+        const imgData = tCtx.getImageData(0, 0, tessCvs.width, tessCvs.height);
+        const d = imgData.data;
+        for (let i = 0; i < d.length; i += 4) {
+          const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+          d[i] = gray;
+          d[i + 1] = gray;
+          d[i + 2] = gray;
+        }
+        tCtx.putImageData(imgData, 0, 0);
+
+        const tessResult = await Tesseract.recognize(tessCvs, 'eng', {
+          logger: () => {}
+        });
+        if (tessResult?.data?.text && tessResult.data.text.trim().length > 0) {
+          parsedText = tessResult.data.text;
+        }
+      } catch (tessErr) {
+        console.warn('[OCR Engine] Tesseract.js offline extraction error:', tessErr);
       }
     }
 

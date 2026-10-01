@@ -547,8 +547,16 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
     checksum_error = None
     if is_pan_card:
         pan_no = (ocr_fields.get("printed_uid") or "").strip().upper()
+        pan_no = re.sub(r'[\s\-]+', '', pan_no)
+        if not pan_no or not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_no):
+            m = re.search(r'\b([A-Z]{5}[0-9]{4}[A-Z])\b', full_text.upper().replace(' ', ''))
+            if m:
+                pan_no = m.group(1)
+                ocr_fields["printed_uid"] = pan_no
         if not pan_no or not re.match(r'^[A-Z]{5}[0-9]{4}[A-Z]$', pan_no):
             checksum_error = f"PAN number '{pan_no or 'MISSING'}' does not conform to Income Tax Department alphanumeric format [A-Z]{{5}}[0-9]{{4}}[A-Z]."
+        else:
+            ocr_fields["printed_uid"] = pan_no
     elif is_bhutan_cid:
         cid_no = re.sub(r'\D', '', ocr_fields.get("printed_uid") or "")
         if len(cid_no) != 11:

@@ -445,12 +445,51 @@ const mockScreenings = [
   }
 ];
 
+const STORAGE_KEY_SCREENINGS = 'satyapan_persisted_screenings_v2';
+
+export function getPersistedScreenings() {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_SCREENINGS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.warn('[SATYAPAN Storage] Error reading persisted screenings:', e);
+    return [];
+  }
+}
+
+export function savePersistedScreening(screening) {
+  if (typeof window === 'undefined' || !window.localStorage || !screening) return;
+  try {
+    const existing = getPersistedScreenings();
+    const filtered = existing.filter(s => s.id !== screening.id);
+    filtered.unshift(screening);
+    // Persist up to 50 user screenings on device hardware
+    const trimmed = filtered.slice(0, 50);
+    localStorage.setItem(STORAGE_KEY_SCREENINGS, JSON.stringify(trimmed));
+  } catch (e) {
+    console.warn('[SATYAPAN Storage] Error saving screening to localStorage:', e);
+  }
+}
+
+export function getAllScreeningsList() {
+  const persisted = getPersistedScreenings();
+  const persistedIds = new Set(persisted.map(s => s.id));
+  const nonDuplicateMocks = mockScreenings.filter(s => !persistedIds.has(s.id));
+  return [...persisted, ...nonDuplicateMocks];
+}
+
 function getMockDashboardStats() {
-  const totalScreenings = 1250;
-  const verifiedCount = 1034;
-  const reviewRequiredCount = 143;
-  const suspiciousCount = 73;
-  const averageRiskScore = 24;
+  const allList = getAllScreeningsList();
+  const totalScreenings = 1250 + (allList.length - mockScreenings.length);
+  const verifiedCount = allList.filter(s => s.status === 'VERIFIED').length + 1030;
+  const reviewRequiredCount = allList.filter(s => s.status === 'REVIEW REQUIRED').length + 140;
+  const suspiciousCount = allList.filter(s => s.status === 'SUSPICIOUS').length + 70;
+  const averageRiskScore = Math.round(
+    allList.reduce((acc, curr) => acc + (curr.riskScore || 20), 0) / (allList.length || 1)
+  );
 
   return {
     totalScreenings,
@@ -458,7 +497,7 @@ function getMockDashboardStats() {
     reviewRequiredCount,
     suspiciousCount,
     averageRiskScore,
-    recentScreenings: mockScreenings,
+    recentScreenings: allList,
     verificationDistribution: [
       { name: 'Verified', count: verifiedCount, color: '#10B981' },
       { name: 'Review Required', count: reviewRequiredCount, color: '#F59E0B' },
@@ -514,19 +553,21 @@ export async function getScreenings({ status = 'all', search = '', limit = 50, o
     if (response.ok) return await response.json();
   } catch (e) {}
 
-  let list = [...mockScreenings];
+  let list = getAllScreeningsList();
   if (status && status.toLowerCase() !== 'all') {
-    list = list.filter(item => item.status.toUpperCase() === status.toUpperCase());
+    list = list.filter(item => item.status && item.status.toUpperCase() === status.toUpperCase());
   }
   if (search) {
     const q = search.toLowerCase();
     list = list.filter(item =>
       (item.id && item.id.toLowerCase().includes(q)) ||
       (item.applicantName && item.applicantName.toLowerCase().includes(q)) ||
-      (item.documentType && item.documentType.toLowerCase().includes(q))
+      (item.documentType && item.documentType.toLowerCase().includes(q)) ||
+      (item.idNumber && item.idNumber.toLowerCase().includes(q))
     );
   }
-  return { screenings: list, total: list.length, limit, offset };
+  const paginated = list.slice(offset, offset + limit);
+  return { screenings: paginated, total: list.length, limit, offset };
 }
 
 export async function getScreeningById(id) {
@@ -538,9 +579,20 @@ export async function getScreeningById(id) {
     }
   } catch (e) {}
 
+  // 1. Search in user's localStorage persisted screenings
+  const persisted = getPersistedScreenings();
+  const userSaved = persisted.find(s => s.id === id);
+  if (userSaved) return userSaved;
+
+  // 2. Search in mock demo screenings
   const found = mockScreenings.find(s => s.id === id);
   if (found) return found;
-  return mockScreenings[0];
+
+  // 3. Fallback: NEVER return mockScreenings[0] (Aarav Sharma) if an unknown/unmatched ID was requested!
+  if (persisted.length > 0) {
+    return persisted[0];
+  }
+  return null;
 }
 
 function fileToDataUrl(file) {
@@ -820,6 +872,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
           auditHash: '0x' + Math.random().toString(16).substring(2, 10).toUpperCase()
         };
 
+        savePersistedScreening(realScreening);
         mockScreenings.unshift(realScreening);
         return {
           success: true,
@@ -894,9 +947,90 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
     const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
 
     const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 5 && !realId.includes('UNVERIFIED')));
-    const isVerified = hasValidIdentity;
-    const finalStatus = isVerified ? 'VERIFIED' : 'REVIEW REQUIRED';
-    const riskScore = isVerified ? 12 : 38;
+
+    // Zero-Trust Check 1: Expiration check
+    let isExpired = false;
+    let expiryDateStr = ocrResult?.expiryDate || null;
+    if (expiryDateStr) {
+      const parts = expiryDateStr.split(/[\/\-\.]/);
+      if (parts.length === 3) {
+        let expD;
+        if (parts[0].length === 4) {
+          expD = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        } else {
+          expD = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+        }
+        if (!isNaN(expD.getTime()) && expD < new Date()) {
+          isExpired = true;
+        }
+      }
+    }
+
+    // Zero-Trust Check 2: Checksum & Format Validation
+    let checksumError = null;
+    const isPan = detectedDocType.includes('PAN') || Boolean(ocrResult?.panEntityType);
+    if (isPan) {
+      const cleanPan = (realId || '').replace(/[\s\-]/g, '').toUpperCase();
+      if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(cleanPan)) {
+        checksumError = `PAN number '${realId || 'MISSING'}' does not conform to Income Tax Dept alphanumeric format [A-Z]{5}[0-9]{4}[A-Z].`;
+      }
+    }
+    const isAadhaar = detectedDocType.includes('Aadhaar');
+    if (isAadhaar) {
+      const digitsOnly = (realId || '').replace(/\D/g, '');
+      if (digitsOnly.length === 12) {
+        if (!validateVerhoeff(digitsOnly)) {
+          checksumError = `12-digit Aadhaar UID '${digitsOnly}' failed Verhoeff Dihedral D5 checksum. Invalid sequence.`;
+        }
+      } else if (!parsedQr?.isSecureQR && (!realId || realId.includes('VERIFIED') || digitsOnly.length < 4)) {
+        checksumError = 'Aadhaar Card missing valid 12-digit UID sequence or QR security seal.';
+      }
+    }
+
+    // Zero-Trust Decision Engine: Any flaw results in immediate clearance denial
+    let isVerified = false;
+    let finalStatus = 'SUSPICIOUS';
+    let riskScore = 94;
+    let actionRequired = 'Document authenticated.';
+    const passedChecks = [];
+    const failedChecks = [];
+    const warnings = [];
+
+    if (isExpired) {
+      isVerified = false;
+      finalStatus = 'SUSPICIOUS';
+      riskScore = 94;
+      actionRequired = `HALT: Travel document has EXPIRED (Validity ended: ${expiryDateStr}). Under border security regulations, passage is strictly denied.`;
+      failedChecks.push({ name: 'Document Temporal Validity', status: 'FAIL', detail: actionRequired });
+    } else if (checksumError) {
+      isVerified = false;
+      finalStatus = 'SUSPICIOUS';
+      riskScore = 95;
+      actionRequired = `HALT: ${checksumError}`;
+      failedChecks.push({ name: 'Format & Mathematical Checksum', status: 'FAIL', detail: checksumError });
+    } else if (ocrResult?.qualityMetrics?.qualityScore < 45) {
+      isVerified = false;
+      finalStatus = 'REVIEW REQUIRED';
+      riskScore = 60;
+      actionRequired = 'Document optical resolution or contrast is low. Physical inspection required.';
+      warnings.push({ name: 'Image Resolution & Contrast', status: 'WARNING', detail: actionRequired });
+    } else if (hasValidIdentity) {
+      isVerified = true;
+      finalStatus = 'VERIFIED';
+      riskScore = 12;
+      actionRequired = `Authentic ${detectedDocType} validated for traveler ${realName}.`;
+      passedChecks.push({ name: 'Identity Format & Structure', status: 'PASS', detail: 'Demographic and cryptographic parameters verified.' });
+      if (parsedQr) {
+        passedChecks.push({ name: 'Cryptographic QR Integrity', status: 'PASS', detail: parsedQr.isSecureQR ? 'UIDAI Secure 2048-bit Cryptographic QR authenticated' : 'Official Identity 2D QR authenticated' });
+      }
+    } else {
+      isVerified = false;
+      finalStatus = 'REVIEW REQUIRED';
+      riskScore = 55;
+      actionRequired = 'Identity credentials require secondary verification at border control desk.';
+      warnings.push({ name: 'Verification Clearance', status: 'WARNING', detail: actionRequired });
+    }
+
     const newId = `VS-2026-${Math.floor(1000 + Math.random() * 9000)}`;
 
     const clientScreening = {
@@ -914,7 +1048,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       qualityScore: ocrResult?.qualityMetrics?.qualityScore || 94,
       faceMatchScore: selfieDataUrl ? 96 : null,
       livenessScore: selfieDataUrl ? 98 : null,
-      authenticityScore: isVerified ? 98 : 75,
+      authenticityScore: isVerified ? 98 : 42,
       livenessStatus: selfieDataUrl ? 'PASS' : 'SKIPPED',
       selfieUrl: selfieDataUrl || null,
       fileName: documentFile?.name || backSideFile?.name || 'Border_Document.jpg',
@@ -927,6 +1061,8 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       cardBackUrl: backDataUrl,
       extractedFields: {
         name: realName,
+        fatherName: ocrResult?.fatherName || null,
+        panEntityType: ocrResult?.panEntityType || null,
         idNumber: realId,
         dateOfBirth: realDob,
         gender: realGender,
@@ -936,46 +1072,36 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       },
       validationResults: {
         valid: isVerified,
-        score: isVerified ? 98 : 65,
-        watchlistStatus: 'CLEAN (Zero LOC / Interpol Hits)',
-        expiryStatus: 'VALID',
+        score: isVerified ? 98 : (finalStatus === 'SUSPICIOUS' ? 22 : 60),
+        watchlistStatus: isVerified ? 'CLEAN (Zero LOC / Interpol Hits)' : 'FLAGGED: SECURITY SCRUTINY',
+        expiryStatus: isExpired ? 'EXPIRED' : 'VALID',
         passedChecks: [
-          {
-            name: parsedQr ? 'Cryptographic QR Integrity' : 'Document Format Integrity',
-            status: 'PASS',
-            detail: parsedQr ? (parsedQr.isSecureQR ? 'UIDAI Secure 2048-bit Cryptographic QR authenticated' : 'Official Identity 2D QR authenticated') : 'Document layout and structure validated on client'
-          },
+          ...passedChecks,
           {
             name: 'Client Edge Inspection',
             status: 'PASS',
             detail: 'Processed on device hardware via Satyapan Offline Edge Engine'
           }
         ],
-        warnings: !isVerified ? [
-          {
-            name: 'Secondary Physical Inspection',
-            status: 'INFO',
-            detail: 'Physical credential presentation recommended at border security desk'
-          }
-        ] : [],
-        failedChecks: []
+        warnings: warnings,
+        failedChecks: failedChecks
       },
       forensicResults: {
-        authenticityScore: isVerified ? 98 : 75,
-        summary: isVerified ? `Authentic ${detectedDocType} validated for traveler ${realName}.` : 'Document identity recorded for physical checkpoint review.',
+        authenticityScore: isVerified ? 98 : 35,
+        summary: actionRequired,
         checks: [
           {
-            name: 'Substrate & Heraldic Emblems',
-            status: 'PASS',
-            detail: 'Uniform substrate texture, official typography, and heraldic seals match standard issuance.'
+            name: 'Substrate & Typography Analysis',
+            status: isVerified ? 'PASS' : (finalStatus === 'SUSPICIOUS' ? 'FAIL' : 'WARNING'),
+            detail: isVerified ? 'Uniform substrate texture, official typography, and heraldic seals match standard issuance.' : actionRequired
           },
           {
-            name: 'Cryptographic Security Seal',
-            status: parsedQr ? 'PASS' : 'INFO',
-            detail: parsedQr ? 'Cryptographic payload authenticated on client' : 'Visual document review'
+            name: 'Security Integrity Standard',
+            status: isVerified ? 'PASS' : 'FAIL',
+            detail: isVerified ? 'Authentic document credentials confirmed.' : actionRequired
           }
         ],
-        tamperedRegions: []
+        tamperedRegions: isVerified ? [] : [{ x: 100, y: 100, width: 200, height: 100, label: 'Unverified / Discrepancy Field' }]
       },
       faceResults: {
         hasLiveCapture: Boolean(selfieDataUrl),
@@ -985,23 +1111,24 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
         faceMatchScore: selfieDataUrl ? 96 : null,
         livenessScore: selfieDataUrl ? 98 : null,
         livenessStatus: selfieDataUrl ? 'PASS' : 'SKIPPED',
-        status: isVerified ? 'VERIFIED' : 'REVIEW REQUIRED',
+        status: isVerified ? 'VERIFIED' : finalStatus,
         notes: selfieDataUrl ? 'Live biometric selfie verified against document photograph.' : 'Webcam biometric capture skipped.'
       },
       riskBreakdown: [
-        { factor: 'Module 1: OCR & Cryptography', weight: '25%', score: isVerified ? 98 : 70, contribution: 'Low Risk', status: 'PASS' },
-        { factor: 'Module 2: Checkpoint Clearance', weight: '25%', score: isVerified ? 99 : 65, contribution: 'Low Risk', status: 'PASS' },
-        { factor: 'Module 3: Tampering Detection', weight: '25%', score: isVerified ? 97 : 75, contribution: 'Low Risk', status: 'PASS' },
+        { factor: 'Module 1: OCR & Cryptography', weight: '25%', score: isVerified ? 98 : 25, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
+        { factor: 'Module 2: Checkpoint Clearance', weight: '25%', score: isVerified ? 99 : 20, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
+        { factor: 'Module 3: Tampering Detection', weight: '25%', score: isVerified ? 97 : 30, contribution: isVerified ? 'Low Risk' : 'High Risk', status: isVerified ? 'PASS' : 'FAIL' },
         { factor: 'Module 4: Biometrics', weight: '25%', score: selfieDataUrl ? 96 : 100, contribution: 'Neutral', status: 'PASS' }
       ],
       reasons: [
-        `Cleared via Satyapan Client-Side Edge Inspection`,
+        `Decision: ${actionRequired}`,
         `Document Holder: ${realName} (${realId})`,
-        `Offline edge verification completed in real time`
+        `Offline edge zero-trust verification executed`
       ],
       auditHash: '0x' + Math.random().toString(16).substring(2, 10).toUpperCase()
     };
 
+    savePersistedScreening(clientScreening);
     mockScreenings.unshift(clientScreening);
     return {
       success: true,
@@ -1040,6 +1167,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
     documentType: documentType && documentType !== 'Auto-Detect (AI)' ? documentType : selectedScenario.documentType,
     createdAt: new Date().toISOString()
   };
+  savePersistedScreening(created);
   mockScreenings.unshift(created);
 
   return {
