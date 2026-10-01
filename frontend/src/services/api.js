@@ -1013,39 +1013,119 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       }
     }
 
-    // Zero-Trust Decision Engine: Any flaw results in immediate clearance denial
+    // Zero-Trust Decision Engine & Bilateral Treaty Matrix
     let isVerified = false;
     let finalStatus = 'SUSPICIOUS';
     let riskScore = 94;
+    let gateDecision = 'REJECT_UNVERIFIED';
     let actionRequired = 'Document authenticated.';
     const passedChecks = [];
     const failedChecks = [];
     const warnings = [];
 
+    const activeCorridor = (borderCorridor || 'UNIVERSAL').toUpperCase();
+
+    // Check for Third-Country Passport in Bhutan or Nepal Corridors
+    const isThirdCountry = detectedDocType.includes('International Passport') || detectedDocType.includes('Third-Country');
+    const hasBhutanVisa = Boolean(ocrResult?.rawText && /bhutan entry permit|e\-visa|bhutan visa|entry permit/i.test(ocrResult.rawText));
+    const hasNepalVisa = Boolean(ocrResult?.rawText && /department of immigration nepal|entry visa|tourist permit|nepal visa/i.test(ocrResult.rawText));
+
     if (isExpired) {
       isVerified = false;
       finalStatus = 'SUSPICIOUS';
       riskScore = 94;
+      gateDecision = 'REJECT_DOCUMENT_EXPIRED';
       actionRequired = `HALT: Travel document has EXPIRED (Validity ended: ${expiryDateStr}). Under border security regulations, passage is strictly denied.`;
       failedChecks.push({ name: 'Document Temporal Validity', status: 'FAIL', detail: actionRequired });
     } else if (checksumError) {
       isVerified = false;
       finalStatus = 'SUSPICIOUS';
       riskScore = 95;
+      gateDecision = 'REJECT_INVALID_CHECKSUM_OR_FORMAT';
       actionRequired = `HALT: ${checksumError}`;
       failedChecks.push({ name: 'Format & Mathematical Checksum', status: 'FAIL', detail: checksumError });
-    } else if (ocrResult?.qualityMetrics?.qualityScore < 45) {
+    } else if ((activeCorridor.includes('BHUTAN')) && isThirdCountry && !hasBhutanVisa) {
       isVerified = false;
-      finalStatus = 'REVIEW REQUIRED';
-      riskScore = 60;
-      actionRequired = 'Document optical resolution or contrast is low. Physical inspection required.';
-      warnings.push({ name: 'Image Resolution & Contrast', status: 'WARNING', detail: actionRequired });
+      finalStatus = 'VISA REQUIRED';
+      riskScore = 65;
+      gateDecision = 'REQUIRE_BHUTAN_VISA';
+      actionRequired = 'FLAG: Valid Bhutan Visa/e-Visa mandatory for border entry.';
+      failedChecks.push({ name: 'Bilateral Treaty Compliance', status: 'WARNING', detail: actionRequired });
+    } else if ((activeCorridor.includes('NEPAL')) && isThirdCountry && !hasNepalVisa) {
+      isVerified = false;
+      finalStatus = 'VISA REQUIRED';
+      riskScore = 65;
+      gateDecision = 'REQUIRE_NEPAL_VISA';
+      actionRequired = 'FLAG: Valid Nepal Tourist/Entry Visa mandatory for border entry.';
+      failedChecks.push({ name: 'Bilateral Treaty Compliance', status: 'WARNING', detail: actionRequired });
     } else if (hasValidIdentity) {
       isVerified = true;
       finalStatus = 'VERIFIED';
-      riskScore = 12;
-      actionRequired = `Authentic ${detectedDocType} validated for traveler ${realName}.`;
+      gateDecision = 'ALLOW_PASSAGE';
+
+      // Dynamic Risk Weighting & Bilateral Treaty Determination
+      if (activeCorridor.includes('BHUTAN')) {
+        if (detectedDocType.includes('Bhutanese Citizen Identity') || detectedDocType.includes('CID')) {
+          riskScore = 11;
+          actionRequired = 'VERIFIED: Bhutanese Citizen Identity Card (11-digit CID & Dzongkhag validated). Reciprocal visa-free bilateral entry authorized under 1949 Indo-Bhutan Treaty of Friendship.';
+        } else if (detectedDocType.includes('Birth Certificate')) {
+          riskScore = 12;
+          actionRequired = 'VERIFIED: Indian Minor Birth Certificate validated under Indo-Bhutan Treaty Protocol (minor accompanied by guardian).';
+        } else if (isThirdCountry && hasBhutanVisa) {
+          riskScore = 14;
+          actionRequired = 'VERIFIED: Bhutan Entry Permit / e-Visa verified for foreign visitor. Clearance authorized for Bhutan border entry.';
+        } else {
+          riskScore = 10;
+          actionRequired = 'VERIFIED: Cleared under 1949 Indo-Bhutan Treaty of Friendship (Visa-free bilateral transit).';
+        }
+      } else if (activeCorridor.includes('NEPAL')) {
+        if (detectedDocType.includes('Nepali Citizenship') || detectedDocType.includes('Nagrikta')) {
+          riskScore = 11;
+          actionRequired = 'VERIFIED: Nepali Citizenship Certificate (Nagrikta) validated. Reciprocal visa-free entry authorized into India under 1950 Indo-Nepal Treaty.';
+        } else if (detectedDocType.includes('Voter ID') || detectedDocType.includes('EPIC')) {
+          riskScore = 10;
+          actionRequired = 'VERIFIED: Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Reciprocal visa-free transit).';
+        } else if (detectedDocType.includes('Birth Certificate')) {
+          riskScore = 12;
+          actionRequired = 'VERIFIED: Minor documentation validated per Nepal Tourism Board guidance.';
+        } else if (isThirdCountry && hasNepalVisa) {
+          riskScore = 14;
+          actionRequired = 'VERIFIED: Nepal Entry Visa / Tourist Permit verified for traveler. Clearance authorized for Nepal border entry.';
+        } else {
+          riskScore = 10;
+          actionRequired = 'VERIFIED: Cleared under 1950 Indo-Nepal Treaty of Peace & Friendship (Reciprocal visa-free transit).';
+        }
+      } else {
+        // Universal Gate
+        if (detectedDocType.includes('Driving Licence')) {
+          riskScore = 14;
+          actionRequired = 'VERIFIED: Authentic Driving Licence validated for identity screening.';
+        } else if (detectedDocType.includes('PAN Card')) {
+          riskScore = 15;
+          actionRequired = 'VERIFIED: Authentic Indian PAN Card validated for identity authentication.';
+        } else if (detectedDocType.includes('Voter ID')) {
+          riskScore = 12;
+          actionRequired = 'VERIFIED: Authentic Voter ID Card (Election Commission of India) validated.';
+        } else if (detectedDocType.includes('Transit Permit')) {
+          riskScore = 16;
+          actionRequired = 'VERIFIED: Authentic Border Transit Permit validated for checkpoint passage.';
+        } else if (detectedDocType.includes('Nepali Citizenship')) {
+          riskScore = 13;
+          actionRequired = 'VERIFIED: Authentic Nepali Citizenship Certificate validated.';
+        } else if (detectedDocType.includes('Passport')) {
+          riskScore = 9;
+          actionRequired = 'VERIFIED: Official ICAO Doc 9303 Passport validated.';
+        } else if (parsedQr?.isSecureQR) {
+          riskScore = 8;
+          actionRequired = 'VERIFIED: UIDAI 2048-bit Cryptographic QR signature authenticated.';
+        } else {
+          riskScore = 12;
+          actionRequired = `Authentic ${detectedDocType} validated for traveler ${realName}.`;
+        }
+      }
+
       passedChecks.push({ name: 'Identity Format & Structure', status: 'PASS', detail: 'Demographic and cryptographic parameters verified.' });
+      passedChecks.push({ name: 'Bilateral Treaty Compliance', status: 'PASS', detail: actionRequired });
       if (parsedQr) {
         passedChecks.push({ name: 'Cryptographic QR Integrity', status: 'PASS', detail: parsedQr.isSecureQR ? 'UIDAI Secure 2048-bit Cryptographic QR authenticated' : 'Official Identity 2D QR authenticated' });
       }
@@ -1053,6 +1133,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       isVerified = false;
       finalStatus = 'REVIEW REQUIRED';
       riskScore = 55;
+      gateDecision = 'SECONDARY_INSPECTION';
       actionRequired = 'Identity credentials require secondary verification at border control desk.';
       warnings.push({ name: 'Verification Clearance', status: 'WARNING', detail: actionRequired });
     }

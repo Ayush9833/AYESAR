@@ -170,30 +170,95 @@ export function parseUniversalDocumentOCR(rawText) {
 
   let documentType = 'Unknown';
   let uid = null;
-  if (/aadhaar|uidai|unique identification|mera aadhaar|meri pehchan|आधार|विशिष्ट पहचान|मेरा आधार|1947|uidai\.gov\.in/i.test(rawText)) {
+  let name = null;
+  let fatherName = null;
+  let address = null;
+  let dob = null;
+  let expiryDate = null;
+  let gender = null;
+  let panEntityType = null;
+
+  // 1. Multi-Document Category Detection
+  if (/royal government of bhutan|citizen identity card|bhutan.*cid|dzongkhag/i.test(rawText)) {
+    documentType = 'Bhutanese Citizen Identity Card (CID)';
+    const cidM = rawText.match(/(?:CID|Card No)[:\s\-]*([0-9]{11})/i) || rawText.match(/\b([0-9]{11})\b/);
+    if (cidM) uid = cidM[1];
+    const dzM = rawText.match(/Dzongkhag[:\s\-]*([A-Za-z\s]+)/i);
+    if (dzM) address = `Dzongkhag: ${dzM[1].trim()}`;
+  } else if (/nepal government|citizenship certificate|nepal citizenship|नागरिकता प्रमाण-पत्र|नेपाल सरकार/i.test(rawText)) {
+    documentType = 'Nepali Citizenship Certificate (Nagrikta)';
+    const cM = rawText.match(/(?:Certificate No|नागरिकता नं)[:\s\-]*([0-9\-\/]+)/i) || rawText.match(/\b(\d{2,4}[\-\/]\d{2,4}[\-\/]\d{2,6})\b/);
+    if (cM) uid = cM[1];
+    const distM = rawText.match(/District[:\s\-]*([A-Za-z\s]+)/i);
+    if (distM) address = `District: ${distM[1].trim()}`;
+  } else if (/birth certificate|municipal corporation.*birth|name of child|जन्म प्रमाण/i.test(rawText)) {
+    documentType = 'Birth Certificate (Minor Travel Identity)';
+    const regM = rawText.match(/(?:Registration No|Reg No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    if (regM) uid = regM[1];
+    const childM = rawText.match(/(?:Name of Child|Child Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (childM) name = childM[1].trim();
+    const fatM = rawText.match(/Father[:\s\-]*([A-Za-z\s]+)/i);
+    if (fatM) fatherName = fatM[1].trim();
+  } else if (/ssb border|border transit permit|border checkpost|ssb permit/i.test(rawText)) {
+    documentType = 'Border Transit Permit (SSB Checkpoint)';
+    const pM = rawText.match(/(?:Permit No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    if (pM) uid = pM[1];
+    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = trM[1].trim();
+    const rM = rawText.match(/(?:Route)[:\s\-]*([A-Za-z0-9\s\-]+)/i);
+    if (rM) address = `Route: ${rM[1].trim()}`;
+  } else if (/bhutan entry permit|department of immigration.*bhutan|entry permit \/ e\-visa|bhutan visa/i.test(rawText)) {
+    documentType = 'Bhutan Entry Permit / Visa';
+    const pM = rawText.match(/(?:Permit No|Visa No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    if (pM) uid = pM[1];
+    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = trM[1].trim();
+  } else if (/department of immigration nepal|entry visa \- tourist permit|nepal tourist visa|nepal visa/i.test(rawText)) {
+    documentType = 'Nepal Entry Visa / Tourist Permit';
+    const vM = rawText.match(/(?:Visa No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    if (vM) uid = vM[1];
+    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = trM[1].trim();
+  } else if (/passport.*(united kingdom|united states|usa|gbr|canada|germany|france|australia|japan)|p<gbr|p<usa|p<can|nationality:\s*(gbr|usa|uk)/i.test(rawText)) {
+    documentType = 'International Passport (Third-Country Visitor)';
+    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([0-9]{9})\b/) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
+    if (passM) uid = passM[1].toUpperCase();
+    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
+    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
+    if (gvM && snM) {
+      name = `${gvM[1].trim()} ${snM[1].trim()}`;
+    }
+  } else if (/passport.*republic of india|भारत गणराज्य.*पासपोर्ट|p<ind/i.test(rawText)) {
+    documentType = 'Indian Passport (ICAO Doc 9303)';
+    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,9})/i) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
+    if (passM) uid = passM[1].toUpperCase();
+    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
+    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
+    if (gvM && snM) {
+      name = `${gvM[1].trim()} ${snM[1].trim()}`;
+    }
+  } else if (/income tax department|permanent account number|pan card|आयकर विभाग/i.test(rawText)) {
+    documentType = 'PAN Card (Income Tax Department)';
+  } else if (/driving licence|driving license|motor vehicles|transport department|parivahan/i.test(rawText)) {
+    documentType = 'Driving Licence (Motor Vehicles Department)';
+    const dlM = rawText.match(/(?:DL No)[:\s\-]*([A-Za-z0-9\-\s]{10,20})/i) || rawText.match(/\b([A-Z]{2}[0-9]{2}\s?[0-9]{11})\b/i);
+    if (dlM) uid = dlM[1].replace(/\s+/g, '').toUpperCase();
+  } else if (/election commission|voter id|electoral photo|epic no|निर्वाचन आयोग|मतदाता/i.test(rawText)) {
+    documentType = 'Voter ID Card (Election Commission of India)';
+  } else if (/aadhaar|uidai|unique identification|mera aadhaar|meri pehchan|आधार|विशिष्ट पहचान|मेरा आधार|1947|uidai\.gov\.in/i.test(rawText)) {
     if (/address|पता|c\/o|s\/o|w\/o|d\/o|आत्मज|पुत्र|पत्नी|पिता|pin|pincode/i.test(rawText)) {
       documentType = 'Aadhaar Card (Back / Address)';
     } else {
-      documentType = 'Aadhaar Card';
+      documentType = 'Aadhaar Card (UIDAI Front)';
     }
-  } else if (/passport|republic of india|भारत गणराज्य/i.test(rawText) || /p<ind/i.test(rawText)) {
-    documentType = 'Passport';
-  } else if (/income tax department|permanent account number|pan card|आयकर विभाग/i.test(rawText)) {
-    documentType = 'PAN Card';
-  } else if (/driving licence|driving license|motor vehicles|transport department|parivahan/i.test(rawText)) {
-    documentType = 'Driving Licence';
-  } else if (/election commission|voter id|electoral photo|epic no|निर्वाचन आयोग|मतदाता/i.test(rawText)) {
-    documentType = 'Voter ID';
   }
 
-  // 1. Universal PAN Card Detection & Check
+  // 2. PAN Card Check & 4th char extraction
   const panMatch = rawText.replace(/[\s\-\.]+/g, ' ').match(/\b([A-Z]{5}\s*\d{4}\s*[A-Z])\b/i);
-  let panEntityType = null;
   if (panMatch) {
     const cleanedPan = panMatch[1].replace(/\s+/g, '').toUpperCase();
     if (!uid) uid = cleanedPan;
-    if (documentType === 'Unknown') documentType = 'PAN Card';
-    // 4th character entity type
+    if (documentType === 'Unknown') documentType = 'PAN Card (Income Tax Department)';
     const entityChar = cleanedPan[3];
     const entityMap = {
       'P': 'Individual (Resident / NRI)',
@@ -210,7 +275,7 @@ export function parseUniversalDocumentOCR(rawText) {
     panEntityType = entityMap[entityChar] || 'Individual';
   }
 
-  // 1b. Universal Voter ID (EPIC) Detection & Check
+  // 3. Voter ID EPIC Number
   const epicMatch = rawText.match(/\b([A-Z]{3}[0-9]{7}|[A-Z]{2,4}[0-9]{6,8})\b/i);
   if (epicMatch) {
     const cleanedEpic = epicMatch[1].toUpperCase();
@@ -220,9 +285,8 @@ export function parseUniversalDocumentOCR(rawText) {
     }
   }
 
-  // 2. Date of Birth or Age
-  let dob = null;
-  const dobMatch = rawText.match(/(?:DOB|Birth|जन्म\s*तिथि|Year\s*of\s*Birth|Date\s*of\s*Birth)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4})/i);
+  // 4. Dates: DOB and Expiration
+  const dobMatch = rawText.match(/(?:DOB|Birth|जन्म\s*तिथि|Year\s*of\s*Birth|Date\s*of\s*Birth)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\-\/\.]\d{2}[\-\/\.]\d{2}|\d{4})/i);
   if (dobMatch) {
     dob = dobMatch[1].replace(/[\.\-]/g, '/');
   } else {
@@ -231,63 +295,53 @@ export function parseUniversalDocumentOCR(rawText) {
   }
   if (!dob) {
     const ageMatch = rawText.match(/(?:Age|आयु)[:\s\-]*(\d{1,3})/i);
-    if (ageMatch) {
-      dob = `Age: ${ageMatch[1]} Years`;
-    }
+    if (ageMatch) dob = `Age: ${ageMatch[1]} Years`;
   }
 
-  // 3. Expiration Date (for Passports, Visas, Driving Licences)
-  let expiryDate = null;
-  const expMatch = rawText.match(/(?:Expiry|Valid\s*Till|Expires|Valid\s*Upto)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4})/i);
+  const expMatch = rawText.match(/(?:Expiry|Valid\s*Till|Expires|Valid\s*Upto)[:\s\-\/]*(\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}|\d{4}[\-\/\.]\d{2}[\-\/\.]\d{2}|\d{4})/i);
   if (expMatch) {
     expiryDate = expMatch[1].replace(/[\.\-]/g, '/');
   }
 
-  // 4. Gender
-  let gender = null;
-  if (/\b(FEMALE|महिला)\b/i.test(rawText)) gender = 'Female';
-  else if (/\b(MALE|पुरुष)\b/i.test(rawText)) gender = 'Male';
+  // 5. Gender
+  if (/\b(FEMALE|महिला|Female)\b/i.test(rawText)) gender = 'Female';
+  else if (/\b(MALE|पुरुष|Male)\b/i.test(rawText)) gender = 'Male';
   else if (/\b(TRANSGENDER)\b/i.test(rawText)) gender = 'Transgender';
 
-  // 5. Document / ID Number Fallbacks
-  if (!uid && (documentType === 'Aadhaar Card' || documentType === 'Unknown')) {
+  // 6. Aadhaar 12-digit number
+  if (!uid && (documentType.includes('Aadhaar') || documentType === 'Unknown')) {
     const uidMatch = rawText.match(/\b(\d{4}\s*\d{4}\s*\d{4}|[Xx\*\.]{4}\s*[Xx\*\.]{4}\s*\d{4})\b/);
     if (uidMatch) {
       uid = uidMatch[1].replace(/\s+/g, ' ');
-      if (documentType === 'Unknown') documentType = 'Aadhaar Card';
+      if (documentType === 'Unknown') documentType = 'Aadhaar Card (UIDAI Front)';
     }
   }
-  if (!uid && (documentType === 'Driving Licence' || documentType === 'Unknown')) {
+
+  // 7. Driving Licence number
+  if (!uid && (documentType.includes('Driving') || documentType === 'Unknown')) {
     const dlMatch = rawText.match(/\b([A-Z]{2}[0-9]{2}\s?[0-9]{11})\b/i);
     if (dlMatch) {
       uid = dlMatch[1].replace(/\s+/g, '').toUpperCase();
-      if (documentType === 'Unknown') documentType = 'Driving Licence';
+      if (documentType === 'Unknown') documentType = 'Driving Licence (Motor Vehicles Department)';
     }
   }
-  if (!uid && (documentType === 'Passport' || documentType === 'Unknown')) {
+
+  // 8. Passport number
+  if (!uid && (documentType.includes('Passport') || documentType === 'Unknown')) {
     const passMatch = rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
     if (passMatch) {
       uid = passMatch[1].toUpperCase();
-      if (documentType === 'Unknown') documentType = 'Passport';
+      if (documentType === 'Unknown') documentType = 'Indian Passport (ICAO Doc 9303)';
     }
   }
+
+  // 9. Generic ID if still not found
   if (!uid) {
-    // Generic identifier (alphanumeric 8-16 chars)
     const genMatch = rawText.match(/\b([A-Z0-9]{8,16})\b/);
     if (genMatch) uid = genMatch[1];
   }
 
-  // 6. Name and Father's Name extraction
-  let name = null;
-  let fatherName = null;
-  let dobLineIndex = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/DOB|Birth|जन्म|Age|आयु/i.test(lines[i])) {
-      dobLineIndex = i;
-      break;
-    }
-  }
-
+  // 10. Robust Name Extraction with Blacklist Filter
   const blacklist = [
     'GOVERNMENT OF INDIA', 'BHARAT SARKAR', 'UNIQUE IDENTIFICATION', 
     'AUTHORITY OF INDIA', 'ENROLLMENT', 'AADHAAR', 'MERA AADHAAR', 
@@ -296,65 +350,53 @@ export function parseUniversalDocumentOCR(rawText) {
     'INCOME TAX DEPARTMENT', 'PERMANENT ACCOUNT NUMBER', 'CARD', 'SIGNATURE',
     'MINISTRY', 'DEPARTMENT', 'REPUBLIC OF INDIA', 'PASSPORT', 'DRIVING LICENCE',
     'ELECTION COMMISSION OF INDIA', 'ELECTION COMMISSION', 'ELECTORAL PHOTO',
-    'IDENTITY CARD', 'VOTER ID', 'VOTER', 'ELECTOR', 'EPIC'
+    'IDENTITY CARD', 'VOTER ID', 'VOTER', 'ELECTOR', 'EPIC', 'ROYAL GOVERNMENT',
+    'NEPAL GOVERNMENT', 'CITIZENSHIP CERTIFICATE', 'NEPAL CITIZENSHIP', 'BIRTH CERTIFICATE',
+    'MUNICIPAL CORPORATION', 'SSB BORDER', 'BORDER TRANSIT', 'ENTRY PERMIT',
+    'IMMIGRATION', 'TOURIST VISA', 'UNITED KINGDOM', 'UNITED STATES', 'UNION OF INDIA'
   ];
 
-  // Specific Voter ID Regex Extraction
-  const electorNameMatch = rawText.match(/(?:Elector'?s?\s*Name|Name\s*of\s*Elector|Name|नाम)[:\s\-]*([A-Za-z\s\.]+)/i);
-  const electorFatherMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम)[:\s\-]*([A-Za-z\s\.]+)/i);
-
-  if (electorNameMatch && !name) {
-    const cand = electorNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-    if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-      name = cand;
-    }
-  }
-  if (electorFatherMatch && !fatherName) {
-    const cand = electorFatherMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-    if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-      fatherName = cand;
-    }
-  }
-
-  if (documentType === 'PAN Card' && dobLineIndex > 0) {
-    const candidateLines = [];
-    for (let k = 0; k < dobLineIndex; k++) {
-      const cand = lines[k].replace(/[^A-Za-z\s\.]/g, '').trim();
-      const upper = cand.toUpperCase();
-      if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
-        candidateLines.push(cand);
-      }
-    }
-    if (candidateLines.length >= 2) {
-      if (!name) name = candidateLines[0];
-      if (!fatherName) fatherName = candidateLines[1];
-    } else if (candidateLines.length === 1 && !name) {
-      name = candidateLines[0];
-    }
-  } else if (dobLineIndex > 0 && !name) {
-    for (let j = dobLineIndex - 1; j >= 0; j--) {
-      const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
-      const upper = cand.toUpperCase();
-      if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
-        name = cand;
-        break;
-      }
-    }
-  }
-
   if (!name) {
-    const toIndex = lines.findIndex(l => /^to[:\s]*$/i.test(l.trim()));
-    if (toIndex !== -1 && toIndex + 1 < lines.length) {
-      const cand = lines[toIndex + 1].replace(/[^A-Za-z\s\.]/g, '').trim();
-      if (cand.length >= 3) name = cand;
+    const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\s\.]+)/i);
+    if (labeledNameMatch) {
+      const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+      if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+        name = cand;
+      }
     }
   }
 
-  // 7. Address extraction (for Aadhaar Back, Passports, DL, Voter ID)
-  let address = null;
-  const addressMatch = rawText.match(/(?:Address|पता)[:\s\-]*([\s\S]{10,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|$)/i);
-  if (addressMatch) {
-    address = addressMatch[1].replace(/\n+/g, ', ').replace(/\s+/g, ' ').trim();
+  if (!fatherName) {
+    const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|Father)[:\s\-]*([A-Za-z\s\.]+)/i);
+    if (fMatch) {
+      const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
+      if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+        fatherName = cand;
+      }
+    }
+  }
+
+  // Check lines above DOB
+  if (!name) {
+    let dobLineIndex = lines.findIndex(l => /DOB|Birth|जन्म|Age|आयु/i.test(l));
+    if (dobLineIndex > 0) {
+      for (let j = dobLineIndex - 1; j >= 0; j--) {
+        const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
+        const upper = cand.toUpperCase();
+        if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
+          name = cand;
+          break;
+        }
+      }
+    }
+  }
+
+  // Address extraction
+  if (!address) {
+    const addressMatch = rawText.match(/(?:Address|पता)[:\s\-]*([\s\S]{10,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|$)/i);
+    if (addressMatch) {
+      address = addressMatch[1].replace(/\n+/g, ', ').replace(/\s+/g, ' ').trim();
+    }
   }
 
   // 8. Indian 6-digit Pincode
