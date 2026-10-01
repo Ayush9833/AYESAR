@@ -50,6 +50,100 @@ class CardOcrCrossCheckEngine:
             return 0.0
         return SequenceMatcher(None, clean_a, clean_b).ratio()
 
+    def isolate_card_boundary(self, img_np: np.ndarray) -> np.ndarray:
+        """
+        Detects ID card perimeter and removes external background surfaces (desks, bedsheets, keyboards).
+        Uses edge detection, morphological closing, contour analysis, and perspective correction / cropping.
+        Safely returns the original image if no distinct card boundary is found.
+        """
+        if img_np is None or img_np.size == 0:
+            return img_np
+
+        h, w = img_np.shape[:2]
+        if h < 120 or w < 120:
+            return img_np
+
+        total_area = w * h
+
+        try:
+            gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY) if len(img_np.shape) == 3 else img_np
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+            edged = cv2.Canny(blurred, 35, 125)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+            closed = cv2.morphologyEx(edged, cv2.MORPH_CLOSE, kernel)
+
+            contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return img_np
+
+            sorted_cnts = sorted(contours, key=cv2.contourArea, reverse=True)
+
+            for cnt in sorted_cnts[:5]:
+                area = cv2.contourArea(cnt)
+                if area < 0.12 * total_area:
+                    break
+                if area > 0.98 * total_area:
+                    return img_np
+
+                peri = cv2.arcLength(cnt, True)
+                approx = cv2.approxPolyDP(cnt, 0.03 * peri, True)
+
+                if len(approx) == 4 and cv2.isContourConvex(approx):
+                    pts = approx.reshape(4, 2)
+                    s = pts.sum(axis=1)
+                    diff = np.diff(pts, axis=1)
+                    tl = pts[np.argmin(s)]
+                    br = pts[np.argmax(s)]
+                    tr = pts[np.argmin(diff)]
+                    bl = pts[np.argmax(diff)]
+
+                    ordered_pts = np.array([tl, tr, br, bl], dtype="float32")
+
+                    width_a = np.linalg.norm(br - bl)
+                    width_b = np.linalg.norm(tr - tl)
+                    max_w = max(int(width_a), int(width_b))
+
+                    height_a = np.linalg.norm(tr - br)
+                    height_b = np.linalg.norm(tl - bl)
+                    max_h = max(int(height_a), int(height_b))
+
+                    if max_w > 100 and max_h > 100:
+                        aspect = max_w / float(max_h)
+                        if (1.15 <= aspect <= 2.3) or (0.45 <= aspect <= 0.85):
+                            dst = np.array([
+                                [0, 0],
+                                [max_w - 1, 0],
+                                [max_w - 1, max_h - 1],
+                                [0, max_h - 1]
+                            ], dtype="float32")
+                            M = cv2.getPerspectiveTransform(ordered_pts, dst)
+                            warped = cv2.warpPerspective(img_np, M, (max_w, max_h))
+                            if warped is not None and warped.size > 0:
+                                print(f"[CARD ISOLATION] Extracted 4-point perspective card crop ({max_w}x{max_h}), aspect: {aspect:.2f}")
+                                return warped
+
+                bx, by, bw, bh = cv2.boundingRect(cnt)
+                b_area = bw * bh
+                if 0.15 * total_area <= b_area <= 0.98 * total_area:
+                    b_aspect = bw / float(bh)
+                    if (1.15 <= b_aspect <= 2.3) or (0.45 <= b_aspect <= 0.85):
+                        pad_x = int(bw * 0.015)
+                        pad_y = int(bh * 0.015)
+                        x1 = max(0, bx - pad_x)
+                        y1 = max(0, by - pad_y)
+                        x2 = min(w, bx + bw + pad_x)
+                        y2 = min(h, by + bh + pad_y)
+                        cropped = img_np[y1:y2, x1:x2]
+                        if cropped is not None and cropped.size > 0:
+                            print(f"[CARD ISOLATION] Extracted bounding rect card crop ({x2-x1}x{y2-y1}), aspect: {b_aspect:.2f}")
+                            return cropped
+
+        except Exception as e:
+            print(f"[CARD ISOLATION] Warning during boundary isolation: {e}")
+
+        return img_np
+
     def extract_printed_text(self, image_input: Any) -> Dict[str, Any]:
         """
         Extracts all printed text lines with confidence scores and bounding boxes using EasyOCR.
@@ -85,6 +179,11 @@ class CardOcrCrossCheckEngine:
                 "parsed_fields": {},
                 "total_lines_detected": 0
             }
+
+        # Automatically isolate document card boundary & crop out background surface (table, bedsheet, desk)
+        card_cropped = self.isolate_card_boundary(img_np)
+        if card_cropped is not None and card_cropped.size > 0:
+            img_np = card_cropped
 
         # Run CRAFT text detection + recognition
         ocr_results = self.reader.readtext(img_np)
@@ -207,7 +306,7 @@ class CardOcrCrossCheckEngine:
                             fields["printed_uid"] = val.upper()
                             break
             if not fields["printed_uid"]:
-                fields["printed_uid"] = "DL-VERIFIED"
+                fields["printed_uid"] = ""
 
             # Name on DL
             for i, line in enumerate(lines):
@@ -284,7 +383,7 @@ class CardOcrCrossCheckEngine:
 
         if is_pan_card:
             fields["document_type"] = "PAN_CARD"
-            pan_number = pan_recovered or "PAN-CARDHOLDER"
+            pan_number = pan_recovered or ""
             fields["printed_uid"] = pan_number
             
             # Entity Code interpretation (4th character)
@@ -474,8 +573,33 @@ class CardOcrCrossCheckEngine:
             if cid_match:
                 fields["printed_uid"] = cid_match.group(1)
             else:
-                alt_cid = re.search(r'(?:CID\s*No|ID\s*No)[\s\:\;\-]+([0-9A-Za-z]+)', full_text, re.I)
-                fields["printed_uid"] = alt_cid.group(1).upper() if alt_cid else "BHUTAN-CID-VERIFIED"
+                for i, line in enumerate(lines):
+                    clean_l = line.strip()
+                    if re.search(r'^(?:CID|ID|Cid)[\s\:\;\-]*$', clean_l, re.I) and i + 1 < len(lines):
+                        nxt = re.sub(r'[^0-9]', '', lines[i + 1])
+                        if len(nxt) == 11:
+                            fields["printed_uid"] = nxt
+                            break
+                        elif len(nxt) == 10:
+                            fields["printed_uid"] = f"1{nxt}"
+                            break
+                    m = re.search(r'(?:CID(?:\s*No)?|ID(?:\s*No)?)[\s\:\;\-]+([0-9A-Za-z]+)', clean_l, re.I)
+                    if m:
+                        cand = m.group(1).strip()
+                        if len(cand) == 11:
+                            fields["printed_uid"] = cand
+                            break
+                        elif len(cand) == 10:
+                            fields["printed_uid"] = f"1{cand}"
+                            break
+                        elif len(cand) >= 4:
+                            fields["printed_uid"] = cand.upper()
+                            break
+            if not fields["printed_uid"]:
+                alt_cid = re.search(r'\b([0-9]{10,12})\b', full_text)
+                if alt_cid:
+                    val = alt_cid.group(1)
+                    fields["printed_uid"] = val if len(val) == 11 else (f"1{val}" if len(val) == 10 else val)
 
             # Name on Bhutan CID
             for line in lines:
@@ -514,7 +638,7 @@ class CardOcrCrossCheckEngine:
                 fields["printed_uid"] = nepal_id_match.group(0)
             else:
                 alt_n = re.search(r'(?:Certificate\s*No|Nagrikta\s*No|No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)', full_text, re.I)
-                fields["printed_uid"] = alt_n.group(1) if alt_n else "NEPAL-CID-VERIFIED"
+                fields["printed_uid"] = alt_n.group(1) if alt_n else ""
 
             for line in lines:
                 m = re.search(r'^(?:Name|नाम)[\s\:\;\-]+(.*)', line, re.I)
@@ -539,7 +663,7 @@ class CardOcrCrossCheckEngine:
         if is_transit_pass:
             fields["document_type"] = "BORDER_TRANSIT_PERMIT"
             permit_match = re.search(r'(?:Permit\s*No|Pass\s*No|Transit\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
-            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else "SSB-PASS-VERIFIED"
+            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else ""
 
             for line in lines:
                 m = re.search(r'^(?:Name|Bearer|Traveler)[\s\:\;\-]+(.*)', line, re.I)
@@ -569,8 +693,8 @@ class CardOcrCrossCheckEngine:
                 fields["document_type"] = "BORDER_ENTRY_VISA"
                 fields["entry_authorization_for"] = "General"
 
-            visa_no = re.search(r'(?:Visa\s*No|Permit\s*No|Entry\s*No|Auth\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
-            fields["printed_uid"] = visa_no.group(1).upper() if visa_no else "VISA-ENTRY-AUTH"
+            visa_no = re.search(r'(?:Visa\s*No|Permit\s*No|Entry\s*No|Auth\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/\_]+)', full_text, re.I)
+            fields["printed_uid"] = visa_no.group(1).upper().replace('_', '-') if visa_no else ""
 
             for line in lines:
                 m = re.search(r'^(?:Name|Traveler|Applicant)[\s\:\;\-]+(.*)', line, re.I)
@@ -590,7 +714,7 @@ class CardOcrCrossCheckEngine:
             fields["is_minor"] = True
             
             reg_match = re.search(r'(?:Registration\s*No|Reg\s*No|Certificate\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
-            fields["printed_uid"] = reg_match.group(1).upper() if reg_match else "BIRTH-CERT-VERIFIED"
+            fields["printed_uid"] = reg_match.group(1).upper() if reg_match else ""
 
             # Child Name
             for line in lines:
@@ -622,7 +746,7 @@ class CardOcrCrossCheckEngine:
                 fields["printed_uid"] = epic_match.group(1)
             else:
                 alt_epic = re.search(r'\b([A-Z]{2}\/\d{2}\/\d{3}\/\d{6})\b', full_text)
-                fields["printed_uid"] = alt_epic.group(1) if alt_epic else "EPIC-VERIFIED"
+                fields["printed_uid"] = alt_epic.group(1) if alt_epic else ""
 
             # Elector's Name
             for line in lines:
@@ -659,7 +783,7 @@ class CardOcrCrossCheckEngine:
         if is_transit_pass:
             fields["document_type"] = "BORDER_TRANSIT_PERMIT"
             permit_match = re.search(r'(?:Permit\s*No|Pass\s*No|Transit\s*No)[\s\:\;\-]+([A-Za-z0-9\-\/]+)', full_text, re.I)
-            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else "SSB-PASS-VERIFIED"
+            fields["printed_uid"] = permit_match.group(1).upper() if permit_match else ""
 
             for line in lines:
                 m = re.search(r'^(?:Name|Bearer|Traveler)[\s\:\;\-]+(.*)', line, re.I)
@@ -700,7 +824,7 @@ class CardOcrCrossCheckEngine:
         else:
             fields["document_type"] = "NATIONAL_ID"
             cand_id = re.search(r'\b([A-Z0-9\-\/]{6,15})\b', full_text)
-            fields["printed_uid"] = cand_id.group(1) if cand_id else "NAT-ID-VERIFIED"
+            fields["printed_uid"] = cand_id.group(1) if cand_id else ""
 
         # 3. Look for Gender (MALE / FEMALE / TRANSGENDER)
         g_match = re.search(r'\b(MALE|FEMALE|TRANSGENDER|पुरुष|महिला)\b', full_text, re.IGNORECASE)

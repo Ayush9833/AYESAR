@@ -505,6 +505,122 @@ export function parseUniversalDocumentOCR(rawText) {
 export const parseAadhaarOCRText = parseUniversalDocumentOCR;
 
 /**
+ * Automatically isolates document card boundary & crops out background surfaces (bedsheet, table, desk)
+ * Scans margins for edge energy / contrast transitions, isolating the card's rectangular bounding frame.
+ */
+export function isolateCardFromBackground(canvas) {
+  if (!canvas || canvas.width < 150 || canvas.height < 150) return canvas;
+
+  try {
+    const w = canvas.width;
+    const h = canvas.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return canvas;
+
+    // Sample downsampled canvas for speed and noise reduction
+    const sampleW = 200;
+    const sampleH = Math.max(100, Math.round((h / w) * sampleW));
+    const sCvs = document.createElement('canvas');
+    sCvs.width = sampleW;
+    sCvs.height = sampleH;
+    const sCtx = sCvs.getContext('2d');
+    sCtx.drawImage(canvas, 0, 0, sampleW, sampleH);
+
+    const imgData = sCtx.getImageData(0, 0, sampleW, sampleH);
+    const data = imgData.data;
+
+    // Convert to grayscale luminance
+    const lum = new Float32Array(sampleW * sampleH);
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      lum[p] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    }
+
+    // Horizontal and vertical gradient energy
+    const rowEnergy = new Float32Array(sampleH);
+    const colEnergy = new Float32Array(sampleW);
+
+    for (let y = 1; y < sampleH - 1; y++) {
+      let rSum = 0;
+      for (let x = 1; x < sampleW - 1; x++) {
+        const idx = y * sampleW + x;
+        const gx = Math.abs(lum[idx + 1] - lum[idx - 1]);
+        const gy = Math.abs(lum[idx + sampleW] - lum[idx - sampleW]);
+        const grad = gx + gy;
+        rSum += grad;
+        colEnergy[x] += grad;
+      }
+      rowEnergy[y] = rSum;
+    }
+
+    // Outer margin scanning limits (max 30% crop on each side)
+    const maxMarginX = Math.floor(sampleW * 0.30);
+    const maxMarginY = Math.floor(sampleH * 0.30);
+
+    let bgRowEnergy = (rowEnergy[2] + rowEnergy[3] + rowEnergy[sampleH - 3] + rowEnergy[sampleH - 4]) / 4;
+    let bgColEnergy = (colEnergy[2] + colEnergy[3] + colEnergy[sampleW - 3] + colEnergy[sampleW - 4]) / 4;
+
+    const thresholdRow = Math.max(bgRowEnergy * 1.4, 25);
+    const thresholdCol = Math.max(bgColEnergy * 1.4, 25);
+
+    let startY = 0;
+    for (let y = 2; y < maxMarginY; y++) {
+      if (rowEnergy[y] > thresholdRow) {
+        startY = y;
+        break;
+      }
+    }
+
+    let endY = sampleH - 1;
+    for (let y = sampleH - 3; y > sampleH - maxMarginY; y--) {
+      if (rowEnergy[y] > thresholdRow) {
+        endY = y;
+        break;
+      }
+    }
+
+    let startX = 0;
+    for (let x = 2; x < maxMarginX; x++) {
+      if (colEnergy[x] > thresholdCol) {
+        startX = x;
+        break;
+      }
+    }
+
+    let endX = sampleW - 1;
+    for (let x = sampleW - 3; x > sampleW - maxMarginX; x--) {
+      if (colEnergy[x] > thresholdCol) {
+        endX = x;
+        break;
+      }
+    }
+
+    const cropFractionW = (endX - startX) / sampleW;
+    const cropFractionH = (endY - startY) / sampleH;
+
+    // Crop if valid card box occupying between 45% and 95% was identified
+    if (cropFractionW >= 0.45 && cropFractionH >= 0.45 && (startX > 3 || endX < sampleW - 4 || startY > 3 || endY < sampleH - 4)) {
+      const realX = Math.max(0, Math.floor((startX / sampleW) * w));
+      const realY = Math.max(0, Math.floor((startY / sampleH) * h));
+      const realW = Math.min(w - realX, Math.ceil(((endX - startX) / sampleW) * w));
+      const realH = Math.min(h - realY, Math.ceil(((endY - startY) / sampleH) * h));
+
+      const croppedCvs = document.createElement('canvas');
+      croppedCvs.width = realW;
+      croppedCvs.height = realH;
+      const cCtx = croppedCvs.getContext('2d');
+      cCtx.drawImage(canvas, realX, realY, realW, realH, 0, 0, realW, realH);
+
+      console.info(`[Card Isolator] Cleanly removed background borders: ${w}x${h} -> ${realW}x${realH}`);
+      return croppedCvs;
+    }
+  } catch (err) {
+    console.warn('[Card Isolator] Background isolation warning:', err);
+  }
+
+  return canvas;
+}
+
+/**
  * Performs asynchronous OCR extraction using OCR.space API with offline Tesseract fallback
  */
 export async function performAadhaarCardOCR(imageSource) {
@@ -529,15 +645,17 @@ export async function performAadhaarCardOCR(imageSource) {
 
     if (!dataUrl) return null;
 
-    // Quality metrics
+    // Quality metrics & Card boundary isolation
     let qualityMetrics = null;
     let croppedPhoto = null;
     let croppedQr = null;
 
     if (canvasForCrop) {
+      canvasForCrop = isolateCardFromBackground(canvasForCrop);
       qualityMetrics = analyzeImageQualityMetrics(canvasForCrop);
       croppedPhoto = cropResidentPhotoFromCard(canvasForCrop);
       croppedQr = cropQrRegionFromDocument(canvasForCrop);
+      dataUrl = canvasForCrop.toDataURL('image/jpeg', 0.88);
     } else {
       try {
         const img = new Image();
@@ -552,10 +670,11 @@ export async function performAadhaarCardOCR(imageSource) {
         cvs.height = img.naturalHeight || img.height;
         const ctx = cvs.getContext('2d');
         ctx.drawImage(img, 0, 0);
-        canvasForCrop = cvs;
-        qualityMetrics = analyzeImageQualityMetrics(cvs);
-        croppedPhoto = cropResidentPhotoFromCard(cvs);
-        croppedQr = cropQrRegionFromDocument(cvs);
+        canvasForCrop = isolateCardFromBackground(cvs);
+        qualityMetrics = analyzeImageQualityMetrics(canvasForCrop);
+        croppedPhoto = cropResidentPhotoFromCard(canvasForCrop);
+        croppedQr = cropQrRegionFromDocument(canvasForCrop);
+        dataUrl = canvasForCrop.toDataURL('image/jpeg', 0.88);
       } catch (e) {}
     }
 

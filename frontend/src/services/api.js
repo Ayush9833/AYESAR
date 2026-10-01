@@ -715,10 +715,10 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
           fileUrl: frontDataUrl || backDataUrl || ext.photo_base64 || null,
           documentType: ext.document_type || documentType || 'National ID',
           borderCorridor: ext.border_corridor || borderCorridor || 'UNIVERSAL',
-          applicantName: ext.name || (isVerified ? 'AUTHENTICATED TRAVELER' : 'UNVERIFIED TRAVELER'),
-          dateOfBirth: ext.date_of_birth || 'N/A',
-          idNumber: ext.id_number || (isVerified ? 'DOC-VERIFIED' : 'UNVERIFIED'),
-          address: ext.address || 'Border Transit Crossway',
+          applicantName: ext.name || '',
+          dateOfBirth: ext.date_of_birth || '',
+          idNumber: ext.id_number || '',
+          address: ext.address || '',
           status: finalStatus,
           riskScore: isVerified ? 12 : (isVisaReq ? 65 : 94),
           confidence: isVerified ? 98 : 30,
@@ -741,7 +741,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
             fatherName: ext.father_name || null,
             idNumber: ext.id_number,
             dateOfBirth: ext.date_of_birth,
-            gender: ext.gender || 'M',
+            gender: ext.gender || '',
             panEntityType: ext.pan_entity_type || null,
             surnameInitialValid: ext.surname_initial_valid,
             address: ext.address,
@@ -919,12 +919,12 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
 
     // 3. Resolve Real Demographics (Never use dummy names like Pooja Verma or Aarav Sharma)
     const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
-    const realName = parsedQr?.name || ocrResult?.name || (!isGenericFileName ? cleanFileName : 'AUTHENTICATED TRAVELER');
+    const realName = parsedQr?.name || ocrResult?.name || (!isGenericFileName ? cleanFileName : '');
     const realFather = parsedQr?.fatherName || ocrResult?.fatherName || null;
-    const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || 'N/A';
-    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || (detectedDocType.includes('PAN') ? 'PAN-REGISTERED' : (detectedDocType.includes('Passport') ? 'PASS-REGISTERED' : (detectedDocType.includes('Voter') ? 'VOTER-REGISTERED' : 'N/A (Pending Identification)')));
-    const realGender = parsedQr?.gender || ocrResult?.gender || 'N/A';
-    const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || 'N/A (Non-Address Identity Credential)';
+    const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || '';
+    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || '';
+    const realGender = parsedQr?.gender || ocrResult?.gender || '';
+    const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || '';
     const realPhoto = parsedQr?.photo || ocrResult?.photo || frontDataUrl || null;
 
     // Zero-Trust Check: QR vs Printed OCR Cross-Verification & Tamper Detection
@@ -942,7 +942,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       }
     }
 
-    const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 5 && !realId.includes('UNVERIFIED') && !realId.includes('Pending')));
+    const hasValidIdentity = Boolean(parsedQr?.isSecureQR || (realId && realId.length >= 4) || (realName && realName.length >= 3) || (ocrResult && ocrResult.rawText && ocrResult.rawText.length > 10));
 
     // Zero-Trust Check 1: Expiration check
     let isExpired = false;

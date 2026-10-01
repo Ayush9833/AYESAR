@@ -865,9 +865,9 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       photo: null,
       fields: {
         panNumber: pan,
-        name: name || 'PAN Cardholder',
-        fatherName: fatherName || 'Listed on ITD Records',
-        dob: dob || 'Verified on Card',
+        name: name || '',
+        fatherName: fatherName || '',
+        dob: dob || '',
         documentType: 'Permanent Account Number (PAN) Card'
       },
       name,
@@ -880,7 +880,7 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       district: null,
       state: null,
       pincode: null,
-      fullAddress: 'N/A (Non-Address Identity Credential)'
+      fullAddress: ''
     };
   }
 
@@ -913,9 +913,9 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       photo: null,
       fields: {
         epicNumber: epic,
-        name: name || 'Elector',
-        fatherName: fatherName || 'Listed on Electoral Roll',
-        dob: dob || 'Verified on Electoral Roll',
+        name: name || '',
+        fatherName: fatherName || '',
+        dob: dob || '',
         documentType: 'Voter Identity Card (EPIC)'
       },
       name,
@@ -936,14 +936,14 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
   const cidMatch = trimmed.match(/\b([0-9]{11})\b/);
   const isBhutanDoc = Boolean(cidMatch || /bhutan|dzongkhag|gewog|drcr|phuentsholing|thimphu/i.test(trimmed));
   if (isBhutanDoc && (cidMatch || /bhutan.*(?:cid|permit)/i.test(trimmed))) {
-    const cidVal = cidMatch ? cidMatch[1] : 'BT-CID-VERIFIED';
+    const cidVal = cidMatch ? cidMatch[1] : '';
     const bNameM = trimmed.match(/(?:name|traveler)[\s\:\=\,\"]+([A-Za-z\s]+)/i);
     const bDzM = trimmed.match(/(?:dzongkhag|district)[\s\:\=\,\"]+([A-Za-z\s]+)/i);
     const bDobM = trimmed.match(/\b(0[1-9]|[12]\d|3[01])[\/\-\.\s]+(0[1-9]|1[0-2])[\/\-\.\s]+(19\d\d|20\d\d)\b/);
 
     const name = bNameM ? bNameM[1].trim() : null;
     const dob = bDobM ? `${bDobM[1]}/${bDobM[2]}/${bDobM[3]}` : null;
-    const address = bDzM ? `Dzongkhag: ${bDzM[1].trim()}` : 'Thimphu, Bhutan';
+    const address = bDzM ? `Dzongkhag: ${bDzM[1].trim()}` : '';
 
     return {
       source: 'QR',
@@ -959,8 +959,8 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       photo: null,
       fields: {
         cidNumber: cidVal,
-        name: name || 'Bhutanese Citizen',
-        dob: dob || 'Verified on Card',
+        name: name || '',
+        dob: dob || '',
         dzongkhag: address,
         documentType: 'Bhutan Citizen Identity Card (CID)'
       },
@@ -981,14 +981,14 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
   const nepalMatch = trimmed.match(/\b(\d{2,4}[-\s\/]\d{2,5}[-\s\/]\d{2,6})\b/);
   const isNepalDoc = Boolean(nepalMatch || /nepal|citizenship|nagrikta|kathmandu|birgunj/i.test(trimmed));
   if (isNepalDoc && (nepalMatch || /nepal.*(?:citizenship|visa)/i.test(trimmed))) {
-    const nepVal = nepalMatch ? nepalMatch[1] : 'NP-NAGRIKTA-VERIFIED';
+    const nepVal = nepalMatch ? nepalMatch[1] : '';
     const nNameM = trimmed.match(/(?:name|traveler)[\s\:\=\,\"]+([A-Za-z\s]+)/i);
     const nDistM = trimmed.match(/(?:district)[\s\:\=\,\"]+([A-Za-z\s]+)/i);
     const nDobM = trimmed.match(/\b(19\d\d|20\d\d)[-\/\.\s]+(0[1-9]|1[0-2])[-\/\.\s]+(0[1-9]|[12]\d|3[01])\b/);
 
     const name = nNameM ? nNameM[1].trim() : null;
     const dob = nDobM ? nDobM[0] : null;
-    const address = nDistM ? `District: ${nDistM[1].trim()}` : 'Kathmandu, Nepal';
+    const address = nDistM ? `District: ${nDistM[1].trim()}` : '';
 
     return {
       source: 'QR',
@@ -1004,8 +1004,8 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       photo: null,
       fields: {
         certificateNumber: nepVal,
-        name: name || 'Nepali Citizen',
-        dob: dob || 'Verified on Certificate',
+        name: name || '',
+        dob: dob || '',
         district: address,
         documentType: 'Nepali Citizenship Certificate (Nagrikta)'
       },
@@ -1028,7 +1028,7 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
     const country = mrzMatch[1];
     const rawNames = mrzMatch[2].replace(/</g, ' ').replace(/\s+/g, ' ').trim();
     const passNumM = trimmed.match(/\b([A-PR-WYa-pr-wy0-9]\d{7,8})\b/);
-    const passNum = passNumM ? passNumM[1].toUpperCase() : 'PASSPORT-VERIFIED';
+    const passNum = passNumM ? passNumM[1].toUpperCase() : '';
 
     return {
       source: 'QR',

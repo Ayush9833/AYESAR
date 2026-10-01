@@ -23,6 +23,7 @@ import {
   GlobalHistogramBinarizer,
   BinaryBitmap
 } from '@zxing/library';
+import { isolateCardFromBackground } from './cardOcrEngine';
 
 export const ALL_BARCODE_FORMATS = [
   'qr_code', 'pdf417', 'data_matrix', 'aztec',
@@ -288,6 +289,15 @@ export async function decodeImageSource(source) {
   // Pass 1: Full Frame Scan
   const fullRes = await decodeSingleCanvas(canvas, 'Full Frame');
   if (fullRes) return fullRes;
+
+  // Pass 1.5: Isolated Card Crop Scan (removes tablecloth, desk, bedsheet background)
+  try {
+    const cardCvs = isolateCardFromBackground(canvas);
+    if (cardCvs && (cardCvs.width !== canvas.width || cardCvs.height !== canvas.height)) {
+      const cardRes = await decodeSingleCanvas(cardCvs, 'Isolated Card Crop');
+      if (cardRes) return cardRes;
+    }
+  } catch (e) {}
 
   // Pass 2: Multi-Zone Targeted Scanning (Crucial for Aadhaar Back Side & Card Photos)
   const extractZone = (sx, sy, sw, sh, targetWidth = 700) => {

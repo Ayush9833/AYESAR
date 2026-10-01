@@ -21,44 +21,44 @@ export default function ExtractedDataCard({
     fields = [
       {
         label: "Full Name (Given & Surname)",
-        value: extractedFields.name || applicantName,
+        value: extractedFields.name || applicantName || '',
         icon: User,
         confidence: `${confidence}%`
       },
       {
         label: "Passport Number",
-        value: extractedFields.passportNumber || idNumber,
+        value: extractedFields.passportNumber || idNumber || '',
         icon: CreditCard,
         confidence: `${confidence}%`,
         isMono: true
       },
       {
         label: "Nationality / Country Code",
-        value: extractedFields.nationality || "IND (Republic of India)",
+        value: extractedFields.nationality || '',
         icon: Globe,
         confidence: "99%"
       },
       {
         label: "Date of Birth (DOB)",
-        value: extractedFields.dateOfBirth || dateOfBirth,
+        value: extractedFields.dateOfBirth || dateOfBirth || '',
         icon: Calendar,
         confidence: `${Math.max(88, confidence - 2)}%`
       },
       {
         label: "Date of Expiry",
-        value: extractedFields.expiryDate || "2032-11-15",
+        value: extractedFields.expiryDate || '',
         icon: Clock,
         confidence: "97%"
       },
       {
         label: "Gender / Sex",
-        value: extractedFields.gender || "M",
+        value: extractedFields.gender || '',
         icon: User,
         confidence: "99%"
       },
       {
         label: "Machine Readable Zone (MRZ L1 & L2)",
-        value: extractedFields.mrz || `P<IND${(extractedFields.name || applicantName || 'TRAVELER').replace(/\s+/g, '<')}<<<<<<<<<<<<<<<<<<<\n${extractedFields.passportNumber || idNumber || 'Z9812450'}4IND9005191M3211158<<<<<<<<<<<<<<<4`,
+        value: extractedFields.mrz || '',
         icon: FileText,
         confidence: "98%",
         isMono: true,
@@ -69,38 +69,38 @@ export default function ExtractedDataCard({
     fields = [
       {
         label: "Visa Number",
-        value: extractedFields.visaNumber || idNumber,
+        value: extractedFields.visaNumber || idNumber || '',
         icon: CreditCard,
         confidence: `${confidence}%`,
         isMono: true
       },
       {
         label: "Visa Classification / Type",
-        value: extractedFields.visaType || "Tourist / Business (T-1 Multiple)",
+        value: extractedFields.visaType || '',
         icon: Tag,
         confidence: "98%"
       },
       {
         label: "Entry Validation / Validity",
-        value: extractedFields.entryValidation || "Valid Until: 2026-12-31 (Multiple Entry)",
+        value: extractedFields.entryValidation || '',
         icon: Clock,
         confidence: `${Math.max(85, confidence - 3)}%`
       },
       {
         label: "Authorized Stay Duration",
-        value: extractedFields.stayDuration || "90 Days per visit",
+        value: extractedFields.stayDuration || '',
         icon: Calendar,
         confidence: `${confidence}%`
       },
       {
         label: "Issuing Post / Mission",
-        value: extractedFields.issuingPost || "Embassy / High Commission of India",
+        value: extractedFields.issuingPost || '',
         icon: Globe,
         confidence: "96%"
       },
       {
         label: "Bearer Name & Linked Passport",
-        value: `${extractedFields.name || applicantName} (P#: ${extractedFields.linkedPassport || 'Z7741029'})`,
+        value: extractedFields.linkedPassport ? `${extractedFields.name || applicantName} (P#: ${extractedFields.linkedPassport})` : (extractedFields.name || applicantName || ''),
         icon: User,
         confidence: "97%"
       }
@@ -110,26 +110,26 @@ export default function ExtractedDataCard({
     fields = [
       {
         label: "Full Name",
-        value: extractedFields.name || applicantName,
+        value: extractedFields.name || applicantName || '',
         icon: User,
         confidence: `${confidence}%`
       },
       {
         label: "Identity / Document Number",
-        value: extractedFields.idNumber || idNumber,
+        value: extractedFields.idNumber || idNumber || '',
         icon: CreditCard,
         confidence: `${confidence}%`,
         isMono: true
       },
       {
         label: "Date of Birth (DOB)",
-        value: extractedFields.dateOfBirth || dateOfBirth,
+        value: extractedFields.dateOfBirth || dateOfBirth || '',
         icon: Calendar,
         confidence: `${Math.max(88, confidence - 2)}%`
       },
       {
         label: "Validity / Expiry Date",
-        value: extractedFields.expiryDate || "Lifetime / Non-Expiring",
+        value: extractedFields.expiryDate || '',
         icon: Clock,
         confidence: "98%"
       },
@@ -141,7 +141,7 @@ export default function ExtractedDataCard({
       },
       {
         label: "Registered Address / Checkpoint Jurisdiction",
-        value: extractedFields.address || address,
+        value: extractedFields.address || address || '',
         icon: MapPin,
         confidence: `${Math.max(82, confidence - 4)}%`,
         fullWidth: true
@@ -203,7 +203,7 @@ export default function ExtractedDataCard({
                 </span>
               </div>
               <p className={`text-sm font-bold text-brand-900 whitespace-pre-line ${field.isMono ? 'font-mono tracking-wider' : ''}`}>
-                {field.value || 'Not Extracted'}
+                {field.value || '—'}
               </p>
             </div>
           );

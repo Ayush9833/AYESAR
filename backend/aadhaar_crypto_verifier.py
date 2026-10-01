@@ -574,7 +574,7 @@ class SatyapanAadhaarVerifier:
                 "name": name_val,
                 "father_name": fat_val,
                 "dob": dob_val,
-                "address": "N/A (Non-Address Identity Credential)"
+                "address": ""
             }
             result["success"] = True
             print(f"[PAN QR SUCCESS] Extracted PAN: {pan_num}, Name: {result['data']['name']}, DOB: {result['data']['dob']}")
@@ -617,7 +617,7 @@ class SatyapanAadhaarVerifier:
             b_name_m = re.search(r'(?:name|traveler)[\s\:\=\,\"\']+([A-Za-z\s]+)', candidate_text, re.I)
             b_dz_m = re.search(r'(?:dzongkhag|district)[\s\:\=\,\"\']+([A-Za-z\s]+)', candidate_text, re.I)
             b_dob_m = re.search(r'\b(0[1-9]|[12]\d|3[01])[\/\-\.\s]+(0[1-9]|1[0-2])[\/\-\.\s]+(19\d\d|20\d\d)\b', candidate_text)
-            cid_val = (parsed_json.get("cid") or parsed_json.get("cidNumber")) if parsed_json and (parsed_json.get("cid") or parsed_json.get("cidNumber")) else (cid_m.group(1) if cid_m else "BT-CID-VERIFIED")
+            cid_val = (parsed_json.get("cid") or parsed_json.get("cidNumber")) if parsed_json and (parsed_json.get("cid") or parsed_json.get("cidNumber")) else (cid_m.group(1) if cid_m else "")
 
             name_val = (parsed_json.get("name") or parsed_json.get("traveler")) if parsed_json and (parsed_json.get("name") or parsed_json.get("traveler")) else (b_name_m.group(1).strip() if b_name_m else None)
             dob_val = (parsed_json.get("dob") or parsed_json.get("dateOfBirth")) if parsed_json and (parsed_json.get("dob") or parsed_json.get("dateOfBirth")) else (f"{b_dob_m.group(1)}/{b_dob_m.group(2)}/{b_dob_m.group(3)}" if b_dob_m else None)
@@ -631,7 +631,7 @@ class SatyapanAadhaarVerifier:
                 "id_number": cid_val,
                 "name": name_val,
                 "dob": dob_val,
-                "address": f"Dzongkhag: {b_dz_m.group(1).strip()}" if b_dz_m else "Thimphu, Bhutan"
+                "address": f"Dzongkhag: {b_dz_m.group(1).strip()}" if b_dz_m else ""
             }
             result["success"] = True
             print(f"[BHUTAN QR SUCCESS] Extracted CID: {cid_val}, Name: {result['data']['name']}")
@@ -644,7 +644,7 @@ class SatyapanAadhaarVerifier:
             n_name_m = re.search(r'(?:name|traveler)[\s\:\=\,\"\']+([A-Za-z\s]+)', candidate_text, re.I)
             n_dist_m = re.search(r'(?:district)[\s\:\=\,\"\']+([A-Za-z\s]+)', candidate_text, re.I)
             n_dob_m = re.search(r'\b(19\d\d|20\d\d)[-\/\.\s]+(0[1-9]|1[0-2])[-\/\.\s]+(0[1-9]|[12]\d|3[01])\b', candidate_text)
-            nep_val = (parsed_json.get("nagrikta") or parsed_json.get("certificateNumber")) if parsed_json and (parsed_json.get("nagrikta") or parsed_json.get("certificateNumber")) else (nepal_m.group(1) if nepal_m else "NP-NAGRIKTA-VERIFIED")
+            nep_val = (parsed_json.get("nagrikta") or parsed_json.get("certificateNumber")) if parsed_json and (parsed_json.get("nagrikta") or parsed_json.get("certificateNumber")) else (nepal_m.group(1) if nepal_m else "")
 
             name_val = (parsed_json.get("name") or parsed_json.get("traveler")) if parsed_json and (parsed_json.get("name") or parsed_json.get("traveler")) else (n_name_m.group(1).strip() if n_name_m else None)
             dob_val = (parsed_json.get("dob") or parsed_json.get("dateOfBirth")) if parsed_json and (parsed_json.get("dob") or parsed_json.get("dateOfBirth")) else (n_dob_m.group(0) if n_dob_m else None)
@@ -658,7 +658,7 @@ class SatyapanAadhaarVerifier:
                 "id_number": nep_val,
                 "name": name_val,
                 "dob": dob_val,
-                "address": f"District: {n_dist_m.group(1).strip()}" if n_dist_m else "Kathmandu, Nepal"
+                "address": f"District: {n_dist_m.group(1).strip()}" if n_dist_m else ""
             }
             result["success"] = True
 
@@ -677,8 +677,8 @@ class SatyapanAadhaarVerifier:
             result["signature_valid"] = True
             result["data"] = {
                 "version": "ICAO_9303_MRZ",
-                "passport_number": pass_num_m.group(1).upper() if pass_num_m else "PASSPORT-VERIFIED",
-                "id_number": pass_num_m.group(1).upper() if pass_num_m else "PASSPORT-VERIFIED",
+                "passport_number": pass_num_m.group(1).upper() if pass_num_m else "",
+                "id_number": pass_num_m.group(1).upper() if pass_num_m else "",
                 "name": raw_names.title() if raw_names else None,
                 "nationality": country
             }

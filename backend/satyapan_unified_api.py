@@ -718,9 +718,9 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
                 real_name = txt.title()
                 break
     elif qr_payload.get("reference_id"):
-        real_name = f"Aadhaar Bearer (Ending {qr_payload.get('reference_id')})"
+        real_name = ""
     else:
-        real_name = "UNVERIFIED IDENTITY"
+        real_name = ""
 
     # 2. DOB Resolution:
     qr_dob = qr_payload.get("dob")
@@ -732,17 +732,17 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
     elif qr_dob:
         real_dob = qr_dob
     else:
-        real_dob = "Unverified"
+        real_dob = ""
 
     # 3. Gender Resolution:
-    real_gender = qr_payload.get("gender") or ocr_fields.get("printed_gender") or "Verified"
+    real_gender = qr_payload.get("gender") or ocr_fields.get("printed_gender") or ""
 
     # 4. ID Number Resolution:
     real_id = (
         ocr_fields.get("printed_uid") or
         qr_payload.get("aadhaar_number") or
         (f"XXXX XXXX {qr_payload.get('reference_id')}" if qr_payload.get("reference_id") else None) or
-        "UIDAI-VERIFIED"
+        ""
     )
 
     # 5. Address Resolution:
@@ -750,7 +750,7 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
         ocr_fields.get("printed_address") or
         (qr_payload.get("address") if qr_payload.get("address") and "Border Transit" not in qr_payload.get("address") else None) or
         qr_payload.get("address") or
-        "Border Transit Zone, Indo-Nepal Crossway"
+        ""
     )
     real_photo_b64 = extracted_qr_photo_b64
     restored_photo_b64 = (
