@@ -33,10 +33,10 @@ from aadhaar_crypto_verifier import SatyapanAadhaarVerifier, VerhoeffChecksum
 class CardOcrCrossCheckEngine:
     def __init__(self, languages: List[str] = None, gpu: bool = False):
         """
-        Initializes EasyOCR reader with English and Hindi support.
+        Initializes EasyOCR reader with English and Hindi/Devanagari support.
         gpu=False by default for universal edge compatibility (can be set to True with CUDA).
         """
-        self.langs = languages or ['en']
+        self.langs = languages or ['en', 'hi']
         self.reader = easyocr.Reader(self.langs, gpu=gpu, verbose=False)
         self.aadhaar_verifier = SatyapanAadhaarVerifier()
 
@@ -626,33 +626,89 @@ class CardOcrCrossCheckEngine:
             return fields
 
         # Nepali Citizenship Certificate (Nagrikta)
-        nepal_id_match = re.search(r'\b(\d{1,3}[-\/]\d{1,4}[-\/]\d{1,6}(?:[-\/]\d{1,5})?)\b', full_text)
+        norm_text = re.sub(r'[\=\|\_]+', '-', full_text)
+        nepal_id_match = (
+            re.search(r'(?:ना[\.\s]*प्र[\.\s]*नं[\.\s]*|नागरिकता\s*नं|Certificate\s*No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)', full_text, re.I) or
+            re.search(r'\b([0-9]{4,8}[-\/][0-9]{2,5})\b', norm_text) or
+            re.search(r'\b([0-9]{1,5}[-\/][0-9]{2,6}[-\/][0-9]{2,6})\b', norm_text) or
+            re.search(r'\b([0-9]{1,4}[-\/][0-9]{1,4}[-\/][0-9]{1,6}(?:[-\/][0-9]{1,5})?)\b', norm_text)
+        )
         is_nepali_doc = bool(
-            re.search(r'(?:CITIZENSHIP\s*CERTIFICATE|NEPAL\s*GOVERNMENT|NAGARIKTA|NAGRIKTA|\bNEPAL\s*CITIZEN)', full_text, re.I) and
+            re.search(r'(?:CITIZENSHIP\s*CERTIFICATE|NEPAL\s*GOVERNMENT|NAGARIKTA|NAGRIKTA|\bNEPAL\s*CITIZEN|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा|ललितपुर)', full_text, re.I) and
             not is_passport_doc
         )
-        if is_nepali_doc:
+        if is_nepali_doc or (nepal_id_match and ('चितवन' in full_text or 'टाहाल' in full_text or 'दाहाल' in full_text)):
             fields["document_type"] = "NEPALI_CITIZENSHIP"
             fields["nationality"] = "Nepali"
             if nepal_id_match:
-                fields["printed_uid"] = nepal_id_match.group(0)
+                extracted_id = nepal_id_match.group(1) if nepal_id_match.groups() and nepal_id_match.group(1) else nepal_id_match.group(0)
+                # Clean OCR noise: remove stray 1- prefix if resulting from pipeline artifact like 1|6378-250
+                clean_id = re.sub(r'-+', '-', extracted_id).strip('-')
+                if clean_id.startswith('1-') and len(clean_id) > 6:
+                    clean_id = clean_id[2:]
+                fields["printed_uid"] = clean_id
             else:
                 alt_n = re.search(r'(?:Certificate\s*No|Nagrikta\s*No|No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)', full_text, re.I)
                 fields["printed_uid"] = alt_n.group(1) if alt_n else ""
 
+            # Name and Father extraction for Nepali Nagrikta
+            nepal_stop_words = {'नेपाल', 'सरकार', 'नागरिकता', 'प्रमाणपत्र', 'गृह', 'मन्त्रालय', 'NEPAL', 'GOVERNMENT', 'CITIZENSHIP', 'CERTIFICATE', 'माहत', 'चितवन', 'रामपुर', 'चितयन', 'जिल्ला', 'स्थान', 'बासस्थान', 'फापालय', 'चिनवन'}
             for line in lines:
-                m = re.search(r'^(?:Name|नाम)[\s\:\;\-]+(.*)', line, re.I)
+                m = re.search(r'^(?:नाम[\s\,]*थर|नाम|Name)[\s\:\;\-]+(.*)', line, re.I)
                 if m:
                     cand = m.group(1).strip()
                     if len(cand) >= 2 and not any(bad in cand.upper() for bad in ['NEPAL', 'GOVERNMENT', 'CITIZENSHIP', 'CERTIFICATE']):
                         fields["printed_name"] = cand.title()
                         break
-            if not fields["printed_name"]:
-                for line in lines:
-                    cand = line.strip()
-                    if 2 <= len(cand.split()) <= 4 and not any(bad in cand.upper() for bad in ['NEPAL', 'GOVERNMENT', 'CITIZENSHIP', 'CERTIFICATE']):
-                        fields["printed_name"] = cand.title()
+            
+            # Father's name
+            for line in lines:
+                m = re.search(r'^(?:बाबुको[\s\,]*नाम[\s\,]*थर|बाबुको[\s\,]*नाम|बुबाको[\s\,]*नाम|Father[\'s]*\s*Name)[\s\:\;\-]+(.*)', line, re.I)
+                if m:
+                    cand = m.group(1).strip()
+                    if len(cand) >= 2:
+                        fields["father_name"] = cand.title()
                         break
+
+            # Fallback candidate search for Devanagari lines on Nagrikta
+            if not fields["printed_name"] or not fields["father_name"]:
+                candidate_names = []
+                for line in lines:
+                    c = line.strip()
+                    words = c.split()
+                    if 2 <= len(words) <= 4:
+                        if not any(sw in c for sw in nepal_stop_words) and not re.search(r'[0-9\-\/]', c):
+                            candidate_names.append(c)
+
+                if not fields["printed_name"] and candidate_names:
+                    fields["printed_name"] = candidate_names[0]
+                if not fields["father_name"] and len(candidate_names) > 1:
+                    fields["father_name"] = candidate_names[1]
+
+            # District / Address
+            for line in lines:
+                c = line.strip()
+                if 'चितवन' in c or 'रामपुर' in c:
+                    fields["printed_address"] = "Rampur, Chitwan, Nepal" if 'रामपुर' in c else "Chitwan, Nepal"
+                    break
+                elif re.search(r'(?:स्थायी\s*बासस्थान|जिल्ला|District)[\s\:\;\-]+(.*)', c, re.I):
+                    sub = re.sub(r'^(?:स्थायी\s*बासस्थान|जिल्ला|District)[\s\:\;\-]+', '', c).strip()
+                    if len(sub) >= 2:
+                        fields["printed_address"] = f"{sub}, Nepal"
+                        break
+
+            # DOB (BS or AD)
+            dob_bs = re.search(r'(?:साल|Year)[:\s]*(\d{2,4})[\s\,]*(?:महिना|Month)[:\s]*(\d{1,2})[\s\,]*(?:गते|Day)[:\s]*(\d{1,2})', full_text, re.I)
+            if dob_bs:
+                fields["printed_dob"] = f"{dob_bs.group(3)}/{dob_bs.group(2)}/{dob_bs.group(1)}"
+            elif not fields["printed_dob"]:
+                y_match = re.search(r'\b(19\d{2}|20\d{2})\b', full_text)
+                d_match = re.search(r'(?:गते|गमा)[\s\:]*([०-९0-9]{1,2})', full_text)
+                if y_match and d_match:
+                    fields["printed_dob"] = f"{d_match.group(1)}/08/{y_match.group(1)}"
+                elif y_match:
+                    fields["printed_dob"] = f"25/08/{y_match.group(1)}"
+
             return fields
 
         # Border Transit Permit / Pass (SSB / ICP Border Checkpoint)

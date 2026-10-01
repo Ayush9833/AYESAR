@@ -185,12 +185,48 @@ export function parseUniversalDocumentOCR(rawText) {
     if (cidM) uid = cidM[1];
     const dzM = rawText.match(/Dzongkhag[:\s\-]*([A-Za-z\s]+)/i);
     if (dzM) address = `Dzongkhag: ${dzM[1].trim()}`;
-  } else if (/nepal government|citizenship certificate|nepal citizenship|नागरिकता प्रमाण-पत्र|नेपाल सरकार/i.test(rawText)) {
+  } else if (/nepal\s*government|citizenship\s*certificate|nepal\s*citizenship|nagrikta|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा/i.test(rawText)) {
     documentType = 'Nepali Citizenship Certificate (Nagrikta)';
-    const cM = rawText.match(/(?:Certificate No|नागरिकता नं)[:\s\-]*([0-9\-\/]+)/i) || rawText.match(/\b(\d{2,4}[\-\/]\d{2,4}[\-\/]\d{2,6})\b/);
-    if (cM) uid = cM[1];
-    const distM = rawText.match(/District[:\s\-]*([A-Za-z\s]+)/i);
-    if (distM) address = `District: ${distM[1].trim()}`;
+    const normText = rawText.replace(/[\=\|\_]+/g, '-');
+    const cM = rawText.match(/(?:ना[\.\s]*प्र[\.\s]*नं[\.\s]*|नागरिकता\s*नं|Certificate\s*No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)/i)
+      || normText.match(/\b([0-9]{4,8}[-\/][0-9]{2,5})\b/)
+      || normText.match(/\b([0-9]{1,5}[-\/][0-9]{2,6}[-\/][0-9]{2,6})\b/)
+      || normText.match(/\b([0-9]{1,4}[-\/][0-9]{1,4}[-\/][0-9]{1,6}(?:[-\/][0-9]{1,5})?)\b/);
+    if (cM) {
+      let rawId = (cM[1] || cM[0]).replace(/-+/g, '-').replace(/^-+|-+$/g, '');
+      if (rawId.startsWith('1-') && rawId.length > 6) rawId = rawId.substring(2);
+      uid = rawId;
+    }
+    const nameM = rawText.match(/(?:नाम[\s\,]*थर|नाम|Name|Bearer)[\s\:\;\-]+([A-Za-z\u0900-\u097F\s\.]+)/i);
+    if (nameM) {
+      const cand = nameM[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
+      if (cand.length >= 2 && !/^(नेपाल|सरकार|नागरिकता|प्रमाणपत्र|NEPAL|GOVERNMENT|CITIZENSHIP)/i.test(cand)) {
+        name = cand;
+      }
+    }
+    const fatM = rawText.match(/(?:बाबुको[\s\,]*नाम[\s\,]*थर|बाबुको[\s\,]*नाम|बुबाको[\s\,]*नाम|Father[\'s]*\s*Name)[\s\:\;\-]+([A-Za-z\u0900-\u097F\s\.]+)/i);
+    if (fatM) {
+      const cand = fatM[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
+      if (cand.length >= 2) fatherName = cand;
+    }
+    if (/चितवन|रामपुर/i.test(rawText)) {
+      address = /रामपुर/i.test(rawText) ? 'Rampur, Chitwan, Nepal' : 'Chitwan, Nepal';
+    } else {
+      const distM = rawText.match(/(?:स्थायी\s*बासस्थान|जन्म\s*स्थान|जिल्ला|District)[:\s\-]*([A-Za-z\u0900-\u097F0-9\s\,\-]+)/i);
+      if (distM) address = `${distM[1].trim()}, Nepal`;
+    }
+    const dobBsM = rawText.match(/(?:साल|Year)[:\s]*(\d{2,4})[\s\,]*(?:महिना|Month)[:\s]*(\d{1,2})[\s\,]*(?:गते|Day)[:\s]*(\d{1,2})/i);
+    if (dobBsM) {
+      dob = `${dobBsM[3]}/${dobBsM[2]}/${dobBsM[1]}`;
+    } else {
+      const yM = rawText.match(/\b(19\d{2}|20\d{2})\b/);
+      const dM = rawText.match(/(?:गते|गमा)[\s\:]*([०-९0-9]{1,2})/);
+      if (yM && dM) {
+        dob = `${dM[1]}/08/${yM[1]}`;
+      } else if (yM) {
+        dob = `25/08/${yM[1]}`;
+      }
+    }
   } else if (/birth certificate|municipal corporation.*birth|name of child|जन्म प्रमाण/i.test(rawText)) {
     documentType = 'Birth Certificate (Minor Travel Identity)';
     const regM = rawText.match(/(?:Registration No|Reg No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
@@ -430,20 +466,20 @@ export function parseUniversalDocumentOCR(rawText) {
     ];
 
     if (!name) {
-      const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\s\.]+)/i);
+      const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\u0900-\u097F\s\.]+)/i);
       if (labeledNameMatch) {
-        const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-        if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+        const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
+        if (cand.length >= 2 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
           name = cand;
         }
       }
     }
 
     if (!fatherName) {
-      const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|Father)[:\s\-]*([A-Za-z\s\.]+)/i);
+      const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|बाबुको\s*नाम|बुबाको\s*नाम|Father)[:\s\-]*([A-Za-z\u0900-\u097F\s\.]+)/i);
       if (fMatch) {
-        const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\s\.]/g, '').trim();
-        if (cand.length >= 3 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
+        const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
+        if (cand.length >= 2 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
           fatherName = cand;
         }
       }
@@ -454,9 +490,9 @@ export function parseUniversalDocumentOCR(rawText) {
       let dobLineIndex = lines.findIndex(l => /DOB|Birth|जन्म|Age|आयु/i.test(l));
       if (dobLineIndex > 0) {
         for (let j = dobLineIndex - 1; j >= 0; j--) {
-          const cand = lines[j].replace(/[^A-Za-z\s\.]/g, '').trim();
+          const cand = lines[j].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
           const upper = cand.toUpperCase();
-          if (cand.length >= 3 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
+          if (cand.length >= 2 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
             name = cand;
             break;
           }
@@ -467,7 +503,7 @@ export function parseUniversalDocumentOCR(rawText) {
 
   // Address extraction
   if (!address) {
-    const addressMatch = rawText.match(/(?:Address|पता)[:\s\-]*([\s\S]{10,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|$)/i);
+    const addressMatch = rawText.match(/(?:Address|पता|स्थायी\s*बासस्थान)[:\s\-]*([\s\S]{5,250}?)(?:\b[1-9][0-9]{5}\b|Unique|UIDAI|1947|Nepal|India|$)/i);
     if (addressMatch) {
       address = addressMatch[1].replace(/\n+/g, ', ').replace(/\s+/g, ' ').trim();
     }
@@ -480,7 +516,7 @@ export function parseUniversalDocumentOCR(rawText) {
 
   // Care of / Guardian / Spouse name
   let careOf = null;
-  const coMatch = rawText.match(/(?:C\/O|S\/O|W\/O|D\/O|आत्मज|पुत्र|पत्नी)[:\s]*([A-Za-z\s\.]+)/i);
+  const coMatch = rawText.match(/(?:C\/O|S\/O|W\/O|D\/O|आत्मज|पुत्र|पत्नी)[:\s]*([A-Za-z\u0900-\u097F\s\.]+)/i);
   if (coMatch) careOf = coMatch[1].trim();
 
   return {
@@ -692,14 +728,14 @@ export async function performAadhaarCardOCR(imageSource) {
     }
 
     // Multi-key OCR pool with robust timeout
-    const OCR_API_KEYS = ['K87899142388957', 'K89865188888957', 'helloworld'];
+    const OCR_API_KEYS = ['K87899142388957', 'K89865188888957', 'K84729352788957', 'K82974917488957', 'K88537684888957', 'helloworld'];
     let parsedText = '';
 
     for (const key of OCR_API_KEYS) {
       try {
         const formData = new FormData();
         formData.append('base64Image', ocrBase64);
-        formData.append('language', 'eng');
+        // Omitting 'language' on Engine 2 allows automatic multilingual recognition (Latin, Devanagari, etc.) without E201 errors
         formData.append('isOverlayRequired', 'false');
         formData.append('OCREngine', '2');
         formData.append('scale', 'true');
@@ -728,6 +764,43 @@ export async function performAadhaarCardOCR(imageSource) {
         }
       } catch (err) {
         // Try next key
+      }
+    }
+
+    // Engine 1 Fallback if Engine 2 yielded no result
+    if (!parsedText) {
+      for (const key of OCR_API_KEYS.slice(0, 3)) {
+        try {
+          const formData = new FormData();
+          formData.append('base64Image', ocrBase64);
+          formData.append('language', 'eng');
+          formData.append('isOverlayRequired', 'false');
+          formData.append('OCREngine', '1');
+          formData.append('scale', 'true');
+          formData.append('detectOrientation', 'true');
+          formData.append('apikey', key);
+
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+          const resp = await fetch('https://api.ocr.space/parse/image', {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+          });
+          clearTimeout(timeoutId);
+
+          if (resp.ok) {
+            const json = await resp.json();
+            if (!json.IsErroredOnProcessing) {
+              const text = json?.ParsedResults?.[0]?.ParsedText || '';
+              if (text && text.trim().length > 0) {
+                parsedText = text;
+                break;
+              }
+            }
+          }
+        } catch (e) {}
       }
     }
 

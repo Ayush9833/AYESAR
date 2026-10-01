@@ -911,15 +911,9 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
       }
     } catch (e) {}
 
-    const cleanFileName = documentFile ? documentFile.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ").toUpperCase() : null;
-
-    // Filter out system words and file descriptors so filenames like "VOTERID", "AADHAAR", "PAN" are NEVER assigned as citizen names
-    const genericNamePattern = /^(VOTER|ID|CARD|DOC|DOCUMENT|AADHAAR|PAN|PASSPORT|DL|DRIVING|LICENSE|PHOTO|IMAGE|FILE|IMG|SCAN|SAMPLE|TEST|WHATSAPP|SCREENSHOT|DOWNLOAD|UPLOAD)/i;
-    const isGenericFileName = !cleanFileName || genericNamePattern.test(cleanFileName.trim()) || cleanFileName.trim().length < 3;
-
-    // 3. Resolve Real Demographics (Never use dummy names like Pooja Verma or Aarav Sharma)
+    // 3. Resolve Real Demographics (Strictly extracted from card/QR; never use filenames or dummy placeholders)
     const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
-    const realName = parsedQr?.name || ocrResult?.name || (!isGenericFileName ? cleanFileName : '');
+    const realName = parsedQr?.name || ocrResult?.name || '';
     const realFather = parsedQr?.fatherName || ocrResult?.fatherName || null;
     const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || '';
     const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || '';
@@ -1097,7 +1091,7 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
           actionRequired = 'VERIFIED: UIDAI 2048-bit Cryptographic QR signature authenticated.';
         } else {
           riskScore = 12;
-          actionRequired = `Authentic ${detectedDocType} validated for traveler ${realName}.`;
+          actionRequired = `Authentic ${detectedDocType} validated${realName ? ` for traveler ${realName}` : ''}.`;
         }
       }
 
