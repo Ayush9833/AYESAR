@@ -209,7 +209,10 @@ class CardOcrCrossCheckEngine:
         full_text = "\n".join(raw_text_list)
         print(f"[OCR] Extracted {len(raw_text_list)} text lines:")
         for t in raw_text_list[:10]:
-            print(f"   -> {t}")
+            try:
+                print(f"   -> {t}")
+            except Exception:
+                print(f"   -> {t.encode('ascii', 'replace').decode('ascii')}")
 
         # Parse potential printed fields via heuristic matching
         parsed_fields = self._parse_fields_from_ocr(raw_text_list, full_text)
@@ -645,7 +648,7 @@ class CardOcrCrossCheckEngine:
                 # Clean OCR noise: remove stray 1- prefix if resulting from pipeline artifact like 1|6378-250
                 clean_id = re.sub(r'-+', '-', extracted_id).strip('-')
                 if clean_id.startswith('1-') and len(clean_id) > 6:
-                    clean_id = clean_id[2:]
+                    clean_id = '1' + clean_id[2:]
                 fields["printed_uid"] = clean_id
             else:
                 alt_n = re.search(r'(?:Certificate\s*No|Nagrikta\s*No|No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)', full_text, re.I)

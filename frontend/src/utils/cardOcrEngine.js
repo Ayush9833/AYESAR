@@ -194,7 +194,7 @@ export function parseUniversalDocumentOCR(rawText) {
       || normText.match(/\b([0-9]{1,4}[-\/][0-9]{1,4}[-\/][0-9]{1,6}(?:[-\/][0-9]{1,5})?)\b/);
     if (cM) {
       let rawId = (cM[1] || cM[0]).replace(/-+/g, '-').replace(/^-+|-+$/g, '');
-      if (rawId.startsWith('1-') && rawId.length > 6) rawId = rawId.substring(2);
+      if (rawId.startsWith('1-') && rawId.length > 6) rawId = '1' + rawId.substring(2);
       uid = rawId;
     }
     const nameM = rawText.match(/(?:नाम[\s\,]*थर|नाम|Name|Bearer)[\s\:\;\-]+([A-Za-z\u0900-\u097F\s\.]+)/i);

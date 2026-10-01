@@ -11,7 +11,16 @@ Pipelines Integrated:
 """
 
 import os
+import sys
 import time
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 # Suppress verbose TensorFlow / oneDNN logs
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
@@ -373,7 +382,6 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
     if qr_img:
         try:
             if isinstance(qr_img, str) and qr_img.startswith("data:image"):
-                import base64
                 encoded = qr_img.split(",", 1)[1] if "," in qr_img else qr_img
                 with open("last_received_upload.jpg", "wb") as f_dbg:
                     f_dbg.write(base64.b64decode(encoded.strip()))
