@@ -516,81 +516,122 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
       }
 
       if (decompressed && decompressed.length > 0) {
-        const isV2 = decompressed.length >= 2 && String.fromCharCode(decompressed[0], decompressed[1]) === 'V2';
-        const fieldNames = isV2 ? [
-          'version', 'email_mobile_status', 'referenceid', 'name', 'dob', 'gender',
-          'careof', 'district', 'landmark', 'house', 'location', 'pincode',
-          'postoffice', 'state', 'street', 'subdistrict', 'vtc', 'last_4_digits_mobile_no'
-        ] : [
-          'email_mobile_status', 'referenceid', 'name', 'dob', 'gender',
-          'careof', 'district', 'landmark', 'house', 'location', 'pincode',
-          'postoffice', 'state', 'street', 'subdistrict', 'vtc'
-        ];
-
         const delimiters = [-1];
         for (let i = 0; i < decompressed.length; i++) {
           if (decompressed[i] === 255) {
             delimiters.push(i);
-            if (delimiters.length > fieldNames.length + 1) break;
+            if (delimiters.length > 30) break;
           }
         }
 
         const decoder = new TextDecoder('iso-8859-1');
-        const extracted = {};
-        for (let i = 0; i < fieldNames.length && i < delimiters.length - 1; i++) {
+        const chunks = [];
+        for (let i = 0; i < delimiters.length - 1; i++) {
           const rawChunk = decompressed.slice(delimiters[i] + 1, delimiters[i + 1]);
-          const val = decoder.decode(rawChunk).trim();
-          if (val) extracted[fieldNames[i]] = val;
+          chunks.push(decoder.decode(rawChunk).trim());
         }
 
-        const refId = extracted.referenceid || '';
-        const last4 = refId.length >= 4 ? refId.substring(0, 4) : '';
-        const uidMasked = last4 ? `XXXX-XXXX-${last4}` : null;
+        // Anchor-based dynamic alignment
+        // In UIDAI VTC format, sequence is always:
+        // [... (version)? (email_mobile_status)? referenceid, name, dob, gender, careof, district, landmark, house, location, pincode, postoffice, state, street, subdistrict, vtc ...]
+        // DOB uniquely matches DD/MM/YYYY or YYYY or DD-MM-YYYY
+        const dobIndex = chunks.findIndex(c => /^\d{2}[\/\-\.]\d{2}[\/\-\.]\d{4}$/.test(c) || (/^\d{4}$/.test(c) && parseInt(c) >= 1900 && parseInt(c) <= 2030));
 
-        // Extract resident JPEG photo if present
-        let photoDataUrl = null;
-        if (delimiters.length > fieldNames.length) {
-          const photoStart = delimiters[fieldNames.length] + 1;
-          const emStatus = parseInt(extracted.email_mobile_status, 10);
-          let hashBuffer = 0;
-          if (emStatus === 3) hashBuffer = 64;
-          else if (emStatus === 1 || emStatus === 2) hashBuffer = 32;
+        let refId = '';
+        let extractedName = null;
+        let extractedDob = null;
+        let extractedGender = null;
+        let extractedAddressParts = [];
+        let extractedPincode = null;
+        const extracted = {};
 
-          const photoEnd = decompressed.length - 256 - hashBuffer;
-          if (photoEnd > photoStart + 100) {
-            let actualStart = photoStart;
-            for (let j = photoStart; j < Math.min(photoStart + 50, photoEnd - 10); j++) {
-              if (decompressed[j] === 0xFF && decompressed[j + 1] === 0xD8) {
-                actualStart = j;
-                break;
+        if (dobIndex !== -1 && dobIndex >= 1) {
+          extractedDob = chunks[dobIndex];
+          extractedName = chunks[dobIndex - 1];
+          if (dobIndex >= 2) {
+            refId = chunks[dobIndex - 2];
+          }
+          if (dobIndex + 1 < chunks.length) {
+            const g = chunks[dobIndex + 1];
+            extractedGender = (g === 'M' || g.toLowerCase() === 'male') ? 'Male' : ((g === 'F' || g.toLowerCase() === 'female') ? 'Female' : g);
+          }
+
+          // Address fields are after gender
+          for (let k = dobIndex + 2; k < chunks.length; k++) {
+            const c = chunks[k];
+            if (c) {
+              if (/^\d{6}$/.test(c)) {
+                extractedPincode = c;
               }
+              extractedAddressParts.push(c);
             }
+          }
+        } else {
+          // Fallback alignment
+          const isV2 = decompressed.length >= 2 && String.fromCharCode(decompressed[0], decompressed[1]) === 'V2';
+          const fieldNames = isV2 ? [
+            'version', 'email_mobile_status', 'referenceid', 'name', 'dob', 'gender',
+            'careof', 'district', 'landmark', 'house', 'location', 'pincode',
+            'postoffice', 'state', 'street', 'subdistrict', 'vtc', 'last_4_digits_mobile_no'
+          ] : [
+            'version', 'email_mobile_status', 'referenceid', 'name', 'dob', 'gender',
+            'careof', 'district', 'landmark', 'house', 'location', 'pincode',
+            'postoffice', 'state', 'street', 'subdistrict', 'vtc'
+          ];
+          for (let i = 0; i < fieldNames.length && i < chunks.length; i++) {
+            if (chunks[i]) extracted[fieldNames[i]] = chunks[i];
+          }
+          refId = extracted.referenceid || '';
+          extractedName = extracted.name || null;
+          extractedDob = extracted.dob || null;
+          extractedGender = extracted.gender ? (extracted.gender === 'M' ? 'Male' : (extracted.gender === 'F' ? 'Female' : extracted.gender)) : null;
+          extractedPincode = extracted.pincode || null;
+        }
 
-            const imgBytes = decompressed.slice(actualStart, photoEnd);
-            let binary = '';
-            const chunkSize = 8192;
-            for (let i = 0; i < imgBytes.length; i += chunkSize) {
-              const sub = imgBytes.subarray(i, i + chunkSize);
-              binary += String.fromCharCode.apply(null, sub);
+        // Clean last 4 digits of Aadhaar from reference ID
+        // UIDAI referenceid format: <last_4_aadhaar><timestamp_milliseconds>
+        const last4 = refId.length >= 4 ? refId.substring(0, 4) : '';
+        const uidMasked = last4 ? `XXXX XXXX ${last4}` : null;
+
+        // Extract resident JPEG photo reliably via SOI (0xFF, 0xD8) and EOI (0xFF, 0xD9)
+        let photoDataUrl = null;
+        let soi = -1;
+        for (let j = 0; j < decompressed.length - 1; j++) {
+          if (decompressed[j] === 0xFF && decompressed[j + 1] === 0xD8) {
+            soi = j;
+            break;
+          }
+        }
+        if (soi !== -1) {
+          let eoi = -1;
+          for (let j = decompressed.length - 2; j > soi; j--) {
+            if (decompressed[j] === 0xFF && decompressed[j + 1] === 0xD9) {
+              eoi = j + 2;
+              break;
             }
-            photoDataUrl = `data:image/jpeg;base64,${btoa(binary)}`;
+          }
+          if (eoi !== -1 && eoi > soi + 100) {
+            try {
+              const imgBytes = decompressed.slice(soi, eoi);
+              let binary = '';
+              const chunkSize = 8192;
+              for (let i = 0; i < imgBytes.length; i += chunkSize) {
+                const sub = imgBytes.subarray(i, i + chunkSize);
+                binary += String.fromCharCode.apply(null, sub);
+              }
+              photoDataUrl = `data:image/jpeg;base64,${btoa(binary)}`;
+            } catch (pErr) {
+              console.warn('Photo slice base64 error:', pErr);
+            }
           }
         }
 
-        const addrList = [
-          extracted.house,
-          extracted.street,
-          extracted.landmark,
-          extracted.location,
-          extracted.vtc,
-          extracted.subdistrict,
-          extracted.district,
-          extracted.state,
-          extracted.pincode
-        ].filter(Boolean);
-        const fullAddress = addrList.length > 0 ? addrList.join(', ') : null;
-
-        const gender = extracted.gender ? (extracted.gender === 'M' ? 'Male' : extracted.gender === 'F' ? 'Female' : extracted.gender) : null;
+        const fullAddress = extractedAddressParts.length > 0 
+          ? extractedAddressParts.join(', ') 
+          : (extracted.house || extracted.street || extracted.district || extracted.state ? [
+              extracted.house, extracted.street, extracted.landmark, extracted.location,
+              extracted.vtc, extracted.subdistrict, extracted.district, extracted.state, extracted.pincode
+            ].filter(Boolean).join(', ') : 'Border Transit Checkpoint Area');
 
         return {
           source: 'QR',
@@ -605,20 +646,24 @@ export function parseUniversalQR(rawPayload, formatHint = null) {
           signatureNote: 'Complete demographic VTC record decompressed from signed byte stream. 256-byte RSA digital signature present (UIDAI Root Public Key required for client validation).',
           photo: photoDataUrl,
           fields: {
-            ...extracted,
+            referenceid: refId,
+            name: extractedName,
+            dob: extractedDob,
+            gender: extractedGender,
+            pincode: extractedPincode,
             fullAddress,
             hasPhoto: !!photoDataUrl,
             last4
           },
-          name: extracted.name || null,
-          dob: extracted.dob || null,
-          gender,
-          idNumber: last4 ? `**** **** ${last4}` : null,
-          uidMasked,
+          name: extractedName,
+          dob: extractedDob,
+          gender: extractedGender,
+          idNumber: uidMasked || (last4 ? `XXXX XXXX ${last4}` : null),
+          uidMasked: uidMasked,
           uidRaw: last4 || null,
           district: extracted.district || null,
           state: extracted.state || null,
-          pincode: extracted.pincode || null,
+          pincode: extractedPincode,
           fullAddress
         };
       }

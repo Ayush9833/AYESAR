@@ -443,7 +443,7 @@ export default function ResultPage() {
         faceResults={screening.faceResults}
         selfieUrl={screening.selfieUrl || screening.faceResults?.livePhotoUrl}
         documentType={screening.documentType}
-        documentPhotoUrl={screening.documentPhoto || screening.photoUrl}
+        documentPhotoUrl={screening.photoUrl || screening.restoredPhoto || screening.documentPhoto}
         restoredPhotoUrl={screening.restoredPhoto || screening.photoUrl}
       />
 

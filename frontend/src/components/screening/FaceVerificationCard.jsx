@@ -120,13 +120,21 @@ export default function FaceVerificationCard({
                   src={documentPhotoUrl || faceResults?.documentPhoto} 
                   alt="Raw QR Photo" 
                   className="w-full h-full object-cover filter contrast-95" 
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    if (e.currentTarget.nextElementSibling) {
+                      e.currentTarget.nextElementSibling.style.display = 'flex';
+                    }
+                  }}
                 />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-2 text-slate-400">
-                  <UserCheck size={28} className="opacity-40 mb-1" />
-                  <span className="text-[9px] font-mono">Raw QR</span>
-                </div>
-              )}
+              ) : null}
+              <div 
+                className="flex flex-col items-center justify-center p-2 text-slate-400" 
+                style={{ display: (documentPhotoUrl || faceResults?.documentPhoto) ? 'none' : 'flex' }}
+              >
+                <UserCheck size={28} className="opacity-40 mb-1" />
+                <span className="text-[9px] font-mono">Raw QR</span>
+              </div>
               <span className="absolute bottom-1 right-1 text-[8px] bg-slate-900/85 text-white font-mono px-1 rounded">
                 Raw QR
               </span>
@@ -151,13 +159,21 @@ export default function FaceVerificationCard({
                   src={restoredPhotoUrl || faceResults?.restoredPhoto || documentPhotoUrl || faceResults?.documentPhoto} 
                   alt="Restored Face" 
                   className="w-full h-full object-cover" 
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    if (e.currentTarget.nextElementSibling) {
+                      e.currentTarget.nextElementSibling.style.display = 'flex';
+                    }
+                  }}
                 />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-2 text-purple-400">
-                  <UserCheck size={28} className="text-purple-500 mb-1" />
-                  <span className="text-[9px] font-mono font-bold text-purple-600">Clarified</span>
-                </div>
-              )}
+              ) : null}
+              <div 
+                className="flex flex-col items-center justify-center p-2 text-purple-400"
+                style={{ display: (restoredPhotoUrl || faceResults?.restoredPhoto || documentPhotoUrl || faceResults?.documentPhoto) ? 'none' : 'flex' }}
+              >
+                <UserCheck size={28} className="text-purple-500 mb-1" />
+                <span className="text-[9px] font-mono font-bold text-purple-600">Clarified</span>
+              </div>
               <span className="absolute bottom-1 right-1 text-[8px] bg-purple-700 text-white font-mono font-bold px-1 rounded">
                 Crisp
               </span>
