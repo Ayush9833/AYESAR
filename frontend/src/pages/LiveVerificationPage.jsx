@@ -128,15 +128,32 @@ function isRecognizedIdentityDocument(ocrResult) {
   const raw = (ocrResult.rawText || '').toLowerCase();
   if (!raw || raw.trim().length < 8) return false;
 
-  // 1. Strict official government issuer keywords (English & Hindi)
+  // 1. Strict official government issuer keywords (English, Hindi, Nepali, Dzongkha/Bhutan)
   // MUST be explicit government authority keywords - never generic words like 'address' or 'c/o'
   const officialIssuers = [
+    // India UIDAI / Aadhaar
     'aadhaar', 'uidai', 'unique identification', 'mera aadhaar', 'meri pehchan', 
     'आधार', 'भारत सरकार', 'government of india', 'enrollment no', 'मेरा आधार मेरी पहचान', 'विशिष्ट पहचान',
+    // India PAN
     'income tax department', 'permanent account number', 'pan card', 'आयकर विभाग',
+    // India Voter ID
     'election commission', 'voter id', 'electoral photo', 'epic no', 'निर्वाचन आयोग', 'मतदाता पहचान',
+    // India Driving Licence
     'driving licence', 'driving license', 'motor vehicles', 'transport department', 'union of india', 'parivahan',
-    'republic of india', 'passport', 'p<ind', 'indian passport', 'भारत गणराज्य'
+    // India & International Passport
+    'republic of india', 'passport', 'p<ind', 'indian passport', 'भारत गणराज्य', 'p<npl', 'p<btn', 'p<',
+    // Nepal Official Documents (Nagrikta / Entry Permit / Visa)
+    'nepal', 'citizenship', 'nagrikta', 'नेपाल', 'नागरिकता', 'ना.प्र.नं.', 'गृह मन्त्रालय', 'नेपाल सरकार',
+    'प्रमाण-पत्र', 'जिल्ला प्रशासन', 'department of immigration', 'nepal visa', 'entry permit', 'tourist visa',
+    // Bhutan Official Documents (CID / Entry Permit / Visa)
+    'bhutan', 'dzongkhag', 'cid', 'druk', 'royal government of bhutan', 'department of immigration bhutan',
+    'bhutan entry permit', 'permit no', 'identity card no',
+    // Minor Birth Certificate / Medical Certificate
+    'birth certificate', 'birth registration', 'form 5', 'municipal corporation', 'department of health', 
+    'जन्म प्रमाण पत्र', 'जन्म प्रमाणपत्र', 'certificate of birth', 'registration no',
+    // SSB Border Transit Permit
+    'sashastra seema bal', 'ssb', 'border transit', 'transit permit', 'border pass', 'border checkpost',
+    'सीमा सुरक्षा', 'सशस्त्र सीमा बल'
   ];
 
   const hasOfficialIssuer = officialIssuers.some(kw => raw.includes(kw));
@@ -147,21 +164,25 @@ function isRecognizedIdentityDocument(ocrResult) {
   if (uid) {
     const isAadhaar = /^\d{4}\s*\d{4}\s*\d{4}$/.test(uid) || /^[Xx\*\.]{4}\s*[Xx\*\.]{4}\s*\d{4}$/.test(uid);
     const isPan = /^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(uid);
-    const isPassport = /^[A-PR-WYa-pr-wy][0-9]{7}$/i.test(uid);
+    const isPassport = /^[A-PR-WYa-pr-wy][0-9]{7,8}$/i.test(uid);
     const isVoter = /^[A-Z]{3}[0-9]{7}$/i.test(uid);
     const isDl = /^[A-Z]{2}[-\s]?[0-9]{2}[-\s]?[0-9]{4,11}$/i.test(uid);
-    hasValidIdFormat = isAadhaar || isPan || isPassport || isVoter || isDl;
+    const isNepaliNagrikta = /^[0-9]{2,8}[-\/][0-9]{1,6}(?:[-\/][0-9]{1,6})?$/.test(uid);
+    const isBhutanCid = /^[0-9]{11}$/.test(uid);
+    const isPermitOrCert = /^[A-Z0-9\-\/]{6,20}$/i.test(uid);
+    hasValidIdFormat = isAadhaar || isPan || isPassport || isVoter || isDl || isNepaliNagrikta || isBhutanCid || (hasOfficialIssuer && isPermitOrCert);
   }
 
   // 3. Extracted resident demographics
   const hasResidentDemographics = Boolean(ocrResult.name && (ocrResult.dob || ocrResult.gender));
 
   // 4. Recognized specific document type (not generic or unknown)
+  const docTypeVal = ocrResult.documentType || ocrResult.docType;
   const isRecognizedType = Boolean(
-    ocrResult.docType && 
-    ocrResult.docType !== 'Identity Document' && 
-    ocrResult.docType !== 'Official ID Card' && 
-    ocrResult.docType !== 'Unknown'
+    docTypeVal && 
+    docTypeVal !== 'Identity Document' && 
+    docTypeVal !== 'Official ID Card' && 
+    docTypeVal !== 'Unknown'
   );
 
   // STRICT RULE A: Official Issuer present AND (valid ID format OR resident demographics OR recognized doc type)
@@ -171,6 +192,11 @@ function isRecognizedIdentityDocument(ocrResult) {
 
   // STRICT RULE B: Recognized official ID format AND resident demographics
   if (hasValidIdFormat && hasResidentDemographics) {
+    return true;
+  }
+
+  // STRICT RULE C: Recognized specific document type AND (hasValidIdFormat OR hasResidentDemographics)
+  if (isRecognizedType && (hasValidIdFormat || hasResidentDemographics)) {
     return true;
   }
 
