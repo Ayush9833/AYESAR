@@ -178,14 +178,64 @@ export function parseUniversalDocumentOCR(rawText) {
   let gender = null;
   let panEntityType = null;
 
+  // 0. Dedicated MRZ Detection for Passports (ICAO Doc 9303 TD3: 2 lines of 44 chars)
+  // Line 1: P<COUNTRY SURNAME << GIVEN NAMES <<<<<
+  // Line 2: PASSPORT_NO < CHECK COUNTRY DOB CHECK SEX EXPIRY CHECK ...
+  const mrz1 = rawText.match(/P<([A-Z]{3})([A-Z0-9<]{20,44})/i);
+  const mrz2 = rawText.match(/([A-Z0-9<]{9})([0-9<])([A-Z]{3})([0-9]{6})([0-9<])([MF<])([0-9]{6})/i);
+
+  if (mrz1 || mrz2) {
+    const country = mrz1 ? mrz1[1].toUpperCase() : (mrz2 ? mrz2[3].toUpperCase() : 'UNK');
+    if (country === 'BTN') {
+      documentType = 'Bhutanese Passport (ICAO Doc 9303)';
+    } else if (country === 'IND') {
+      documentType = 'Indian Passport (ICAO Doc 9303)';
+    } else if (country === 'NPL') {
+      documentType = 'Nepali Passport (ICAO Doc 9303)';
+    } else {
+      documentType = 'International Passport (Third-Country Visitor)';
+    }
+
+    if (mrz2) {
+      uid = mrz2[1].replace(/</g, '').toUpperCase();
+      const dobRaw = mrz2[4];
+      const yy = parseInt(dobRaw.substring(0, 2), 10);
+      const mm = dobRaw.substring(2, 4);
+      const dd = dobRaw.substring(4, 6);
+      const fullYy = yy > 30 ? 1900 + yy : 2000 + yy;
+      dob = `${dd}/${mm}/${fullYy}`;
+
+      const expRaw = mrz2[7];
+      const eYy = parseInt(expRaw.substring(0, 2), 10);
+      const eMm = expRaw.substring(2, 4);
+      const eDd = expRaw.substring(4, 6);
+      const fullExpYy = 2000 + eYy;
+      expiryDate = `${eDd}/${eMm}/${fullExpYy}`;
+
+      const s = mrz2[6].toUpperCase();
+      gender = s === 'M' ? 'Male' : (s === 'F' ? 'Female' : null);
+    }
+
+    if (mrz1) {
+      const rest = mrz1[2];
+      const parts = rest.split('<<');
+      const surname = parts[0].replace(/</g, ' ').trim();
+      const given = parts[1] ? parts[1].replace(/</g, ' ').trim() : '';
+      name = given ? `${given} ${surname}`.trim() : surname;
+    }
+  }
+
   // 1. Multi-Document Category Detection
+  const hasNagriktaId = /\b([0-9]{4,8}[-\/][0-9]{2,5})\b/.test(rawText);
+  const isNagrikta = hasNagriktaId || /nepal\s*government|citizenship\s*certificate|nepal\s*citizenship|nagrikta|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा/i.test(rawText);
+
   if (/royal government of bhutan|citizen identity card|bhutan.*cid|dzongkhag/i.test(rawText)) {
     documentType = 'Bhutanese Citizen Identity Card (CID)';
     const cidM = rawText.match(/(?:CID|Card No)[:\s\-]*([0-9]{11})/i) || rawText.match(/\b([0-9]{11})\b/);
     if (cidM) uid = cidM[1];
     const dzM = rawText.match(/Dzongkhag[:\s\-]*([A-Za-z\s]+)/i);
     if (dzM) address = `Dzongkhag: ${dzM[1].trim()}`;
-  } else if (/nepal\s*government|citizenship\s*certificate|nepal\s*citizenship|nagrikta|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा/i.test(rawText)) {
+  } else if (isNagrikta && documentType === 'Unknown') {
     documentType = 'Nepali Citizenship Certificate (Nagrikta)';
     const normText = rawText.replace(/[\=\|\_]+/g, '-');
     const cM = rawText.match(/(?:ना[\.\s]*प्र[\.\s]*नं[\.\s]*|नागरिकता\s*नं|Certificate\s*No)[\s\:\;\-]+([0-9A-Za-z\-\/]+)/i)
@@ -219,12 +269,17 @@ export function parseUniversalDocumentOCR(rawText) {
     if (dobBsM) {
       dob = `${dobBsM[3]}/${dobBsM[2]}/${dobBsM[1]}`;
     } else {
-      const yM = rawText.match(/\b(19\d{2}|20\d{2})\b/);
-      const dM = rawText.match(/(?:गते|गमा)[\s\:]*([०-९0-9]{1,2})/);
-      if (yM && dM) {
-        dob = `${dM[1]}/08/${yM[1]}`;
-      } else if (yM) {
-        dob = `25/08/${yM[1]}`;
+      const bsAnyM = rawText.match(/\b(19\d{2}|20\d{2})\b.*?([0-9]{1,2}).*?([0-9]{1,2})/s);
+      if (bsAnyM) {
+        dob = `${bsAnyM[3]}/${bsAnyM[2]}/${bsAnyM[1]}`;
+      } else {
+        const yM = rawText.match(/\b(19\d{2}|20\d{2})\b/);
+        const dM = rawText.match(/(?:गते|गमा)[\s\:]*([०-९0-9]{1,2})/);
+        if (yM && dM) {
+          dob = `${dM[1]}/08/${yM[1]}`;
+        } else if (yM) {
+          dob = `25/08/${yM[1]}`;
+        }
       }
     }
   } else if (/birth certificate|municipal corporation.*birth|name of child|जन्म प्रमाण/i.test(rawText)) {
@@ -255,22 +310,32 @@ export function parseUniversalDocumentOCR(rawText) {
     if (vM) uid = vM[1];
     const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
     if (trM) name = trM[1].trim();
-  } else if (/passport.*(united kingdom|united states|usa|gbr|canada|germany|france|australia|japan)|p<gbr|p<usa|p<can|nationality:\s*(gbr|usa|uk)/i.test(rawText)) {
-    documentType = 'International Passport (Third-Country Visitor)';
-    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([0-9]{9})\b/) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
-    if (passM) uid = passM[1].toUpperCase();
-    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
-    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
-    if (gvM && snM) {
-      name = `${gvM[1].trim()} ${snM[1].trim()}`;
-    }
+  } else if (/p<btn|kingdom of bhutan.*passport|bhutan.*passport/i.test(rawText)) {
+    documentType = 'Bhutanese Passport (ICAO Doc 9303)';
+    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([A-PR-WYa-pr-wyB]\d{6,7})\b/i);
+    if (passM && !uid) uid = passM[1].toUpperCase();
+    const trM = rawText.match(/(?:Name of Bearer|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM && !name) name = trM[1].trim();
+  } else if (/p<npl|nepal.*passport/i.test(rawText)) {
+    documentType = 'Nepali Passport (ICAO Doc 9303)';
+    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([A-PR-WYa-pr-wy0-9]{7,9})\b/i);
+    if (passM && !uid) uid = passM[1].toUpperCase();
   } else if (/passport.*republic of india|भारत गणराज्य.*पासपोर्ट|p<ind/i.test(rawText)) {
     documentType = 'Indian Passport (ICAO Doc 9303)';
     const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,9})/i) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
-    if (passM) uid = passM[1].toUpperCase();
+    if (passM && !uid) uid = passM[1].toUpperCase();
     const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
     const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
-    if (gvM && snM) {
+    if (gvM && snM && !name) {
+      name = `${gvM[1].trim()} ${snM[1].trim()}`;
+    }
+  } else if (/passport.*(united kingdom|united states|usa|gbr|canada|germany|france|australia|japan)|p<gbr|p<usa|p<can|p<[a-z]{3}|nationality:\s*(gbr|usa|uk)|passport/i.test(rawText)) {
+    if (documentType === 'Unknown') documentType = 'International Passport (Third-Country Visitor)';
+    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([0-9]{9})\b/) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
+    if (passM && !uid) uid = passM[1].toUpperCase();
+    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
+    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
+    if (gvM && snM && !name) {
       name = `${gvM[1].trim()} ${snM[1].trim()}`;
     }
   } else if (/income tax department|permanent account number|pan card|आयकर विभाग/i.test(rawText)) {
@@ -384,6 +449,10 @@ export function parseUniversalDocumentOCR(rawText) {
     // Dedicated PAN Card Parser (filters out Hindi OCR misreads like TELE, ESE AER, fatrT, HRT)
     const panNoiseRegex = /^(INCOME|TAX|DEPARTMENT|GOVT|INDIA|PERMANENT|ACCOUNT|NUMBER|CARD|SIGNATURE|APPLICATION|DIGITALLY|PHYSICALLY|VALID|UNLESS|TELE|ESE|AER|FATRT|HRT|TTTR|SIREN|FATS|ARA|PROR|FRDI|AU1|HG|311475R|27022026|27124128|D;TRUTAR|DAULASHND)/i;
     const panLabelRegex = /^(NAME|नाम|FATHER|FATHERS|FATHER\'S|पिता|DOB|DATE|BIRTH|OF BIRTH|DETE|BINN|EURIU|FARHERS|NANTE|STR\s*\/\s*NAME|T\s*45T|F\s*51)/i;
+    const isPanGarbage = (txt) => {
+      if (!txt || txt.trim().length < 3) return true;
+      return /date\s*of\s*birth|birth|dob|जन्म|तारीख|farfer|fatrt|father|mother|income|tax|permanent|account|signature|हस्ताक्षर|department|govt|india/i.test(txt);
+    };
 
     let labeledName = null;
     let labeledFather = null;
@@ -394,12 +463,12 @@ export function parseUniversalDocumentOCR(rawText) {
       if (/(?:Father|पिता|Farhers)/i.test(l)) {
         const rest = l.replace(/.*?(?:Father\'?s?\s*Name|पिता\s*का\s*नाम|Farhers\s*Nante|Father)[\s\:\/\-]*/i, '').trim();
         const cleanRest = rest.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest)) {
+        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest) && !isPanGarbage(cleanRest)) {
           labeledFather = cleanRest;
         } else {
           for (let j = i + 1; j < Math.min(lines.length, i + 3); j++) {
             const nextClean = lines[j].replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean)) {
+            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean) && !isPanGarbage(nextClean)) {
               labeledFather = nextClean;
               break;
             }
@@ -410,12 +479,12 @@ export function parseUniversalDocumentOCR(rawText) {
       else if (/(?:Name|नाम)/i.test(l) && !/(?:Father|पिता|Account|Permanent|Department|GOVT)/i.test(l)) {
         const rest = l.replace(/.*?(?:Name|नाम)[\s\:\/\-]*/i, '').trim();
         const cleanRest = rest.replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest)) {
+        if (cleanRest.length >= 3 && !panNoiseRegex.test(cleanRest) && !panLabelRegex.test(cleanRest) && !isPanGarbage(cleanRest)) {
           labeledName = cleanRest;
         } else {
           for (let j = i + 1; j < Math.min(lines.length, i + 3); j++) {
             const nextClean = lines[j].replace(/[^A-Za-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
-            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean)) {
+            if (nextClean.length >= 3 && !panNoiseRegex.test(nextClean) && !panLabelRegex.test(nextClean) && !isPanGarbage(nextClean)) {
               labeledName = nextClean;
               break;
             }
@@ -735,6 +804,7 @@ export async function performAadhaarCardOCR(imageSource) {
       try {
         const formData = new FormData();
         formData.append('base64Image', ocrBase64);
+        formData.append('filetype', 'JPG');
         // Omitting 'language' on Engine 2 allows automatic multilingual recognition (Latin, Devanagari, etc.) without E201 errors
         formData.append('isOverlayRequired', 'false');
         formData.append('OCREngine', '2');
@@ -773,6 +843,7 @@ export async function performAadhaarCardOCR(imageSource) {
         try {
           const formData = new FormData();
           formData.append('base64Image', ocrBase64);
+          formData.append('filetype', 'JPG');
           formData.append('language', 'eng');
           formData.append('isOverlayRequired', 'false');
           formData.append('OCREngine', '1');

@@ -912,13 +912,51 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
     } catch (e) {}
 
     // 3. Resolve Real Demographics (Strictly extracted from card/QR; never use filenames or dummy placeholders)
-    const detectedDocType = parsedQr?.typeLabel || ocrResult?.documentType || (documentType && documentType !== 'Auto-Detect (AI)' ? documentType : 'National Identity Card');
-    const realName = parsedQr?.name || ocrResult?.name || '';
-    const realFather = parsedQr?.fatherName || ocrResult?.fatherName || null;
-    const realDob = parsedQr?.dob || ocrResult?.dob || ocrResult?.expiryDate || '';
-    const realId = parsedQr?.idNumber || parsedQr?.uidMasked || parsedQr?.uidRaw || ocrResult?.uid || '';
-    const realGender = parsedQr?.gender || ocrResult?.gender || '';
-    const realAddress = parsedQr?.fullAddress || parsedQr?.district || ocrResult?.address || '';
+    const isGenericQrPayload = !parsedQr?.isSecureQR && (
+      parsedQr?.type === 'UNIVERSAL_PAYLOAD' || 
+      parsedQr?.typeLabel === 'Universal Code Payload' || 
+      parsedQr?.format === 'PLAIN_TEXT' ||
+      parsedQr?.source === 'BARCODE'
+    );
+
+    // Prefer recognized government document type from OCR or structured identity QR over generic barcode text
+    let detectedDocType = 'National Identity Card';
+    if (ocrResult?.documentType && ocrResult.documentType !== 'Unknown' && ocrResult.documentType !== 'Official ID Card') {
+      detectedDocType = ocrResult.documentType;
+    } else if (parsedQr && !isGenericQrPayload && parsedQr.typeLabel) {
+      detectedDocType = parsedQr.typeLabel;
+    } else if (documentType && documentType !== 'Auto-Detect (AI)') {
+      detectedDocType = documentType;
+    } else if (ocrResult?.documentType) {
+      detectedDocType = ocrResult.documentType;
+    }
+
+    const realName = (!isGenericQrPayload && parsedQr?.name) || ocrResult?.name || '';
+    
+    // Sanitize father name against labels/noise
+    let rawFather = (!isGenericQrPayload && parsedQr?.fatherName) || ocrResult?.fatherName || null;
+    if (rawFather && /date\s*of\s*birth|birth|dob|farfer|fatrt|father|mother|income|tax|permanent|account|signature|हस्ताक्षर|department|govt|india/i.test(rawFather)) {
+      rawFather = null;
+    }
+    const realFather = rawFather;
+
+    const realDob = (!isGenericQrPayload && parsedQr?.dob) || ocrResult?.dob || ocrResult?.expiryDate || '';
+
+    // Prefer valid government ID number from OCR over unstructured barcode strings
+    let realId = '';
+    const hasValidOcrUid = ocrResult?.uid && ocrResult.uid.length >= 4;
+    if (hasValidOcrUid) {
+      realId = ocrResult.uid;
+    } else if (parsedQr?.isSecureQR && (parsedQr?.idNumber || parsedQr?.uidMasked)) {
+      realId = parsedQr.idNumber || parsedQr.uidMasked;
+    } else if (ocrResult?.uid) {
+      realId = ocrResult.uid;
+    } else if (!isGenericQrPayload && parsedQr?.idNumber) {
+      realId = parsedQr.idNumber;
+    }
+
+    const realGender = (!isGenericQrPayload && parsedQr?.gender) || ocrResult?.gender || '';
+    const realAddress = (!isGenericQrPayload && (parsedQr?.fullAddress || parsedQr?.district)) || ocrResult?.address || '';
     const realPhoto = parsedQr?.photo || ocrResult?.photo || frontDataUrl || null;
 
     // Zero-Trust Check: QR vs Printed OCR Cross-Verification & Tamper Detection
@@ -926,7 +964,8 @@ export async function uploadScreening({ documentFile, backSideFile, selfieFile, 
     let isTampered = false;
     let tamperReasons = [];
 
-    if (parsedQr && ocrResult && (ocrResult.name || ocrResult.uid)) {
+    // Only run tamper cross-verification if QR is a structured identity credential (not an arbitrary tracking barcode)
+    if (parsedQr && !isGenericQrPayload && ocrResult && (ocrResult.name || ocrResult.uid)) {
       comparisonResult = compareQrAndOcr(parsedQr, ocrResult);
       if (comparisonResult && comparisonResult.mismatches > 0) {
         isTampered = true;
