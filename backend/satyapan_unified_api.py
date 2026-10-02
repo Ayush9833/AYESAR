@@ -719,14 +719,6 @@ async def screen_traveler(request: Request) -> Dict[str, Any]:
         real_name = qr_name
     elif ocr_name:
         real_name = ocr_name
-    elif ocr_data and ocr_data.get("lines"):
-        for line_obj in ocr_data.get("lines", []):
-            txt = line_obj.get("text", "").strip()
-            if len(txt) > 2 and not any(bad in txt.upper() for bad in ["GOVERNMENT", "INDIA", "AUTHORITY", "DEPARTMENT", "REPUBLIC", "UNIQUE", "IDENTIFICATION", "MERA", "AADHAAR"]):
-                real_name = txt.title()
-                break
-    elif qr_payload.get("reference_id"):
-        real_name = ""
     else:
         real_name = ""
 

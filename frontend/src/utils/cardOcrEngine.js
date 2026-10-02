@@ -161,6 +161,44 @@ export function cropResidentPhotoFromCard(source) {
   }
 }
 
+const STOP_WORDS = new Set([
+  'GOVERNMENT', 'INDIA', 'BHARAT', 'SARKAR', 'COMMISSION', 'ELECTION',
+  'ELECTORAL', 'INCOME', 'TAX', 'DEPARTMENT', 'REPUBLIC', 'MINISTRY',
+  'PASSPORT', 'LICENCE', 'LICENSE', 'DRIVING', 'MOTOR', 'VEHICLES',
+  'TRANSPORT', 'PERMIT', 'TRANSIT', 'CHECKPOST', 'SSB', 'ROYAL',
+  'BHUTAN', 'NEPAL', 'CITIZENSHIP', 'CERTIFICATE', 'IDENTITY', 'CARD',
+  'NATIONAL', 'STATE', 'CORP', 'MUNICIPAL', 'CORPORATION', 'BIRTH',
+  'REGISTRATION', 'AUTHORITY', 'UIDAI', 'ENROLMENT', 'HELP', 'LINE',
+  'CIVIL', 'BORDER', 'SECURITY', 'IMMIGRATION', 'VISITOR', 'TRAVEL',
+  'TRAVELER', 'DOCUMENT', 'OFFICE', 'OFFICIAL', 'CHIEF', 'ELECTORAL',
+  'OFFICER', 'SECRETARIAT', 'POLICE', 'STATION', 'DISTRICT', 'PROVINCE'
+]);
+
+export function cleanExtractedName(nameStr) {
+  if (!nameStr || typeof nameStr !== 'string') return null;
+  let s = nameStr.replace(/ः/g, ':').replace(/\?/g, ':').replace(/\=/g, '-').trim();
+  // Strip label prefixes
+  s = s.replace(/^(?:Elector(?:\s*'?s)?\s*(?:N[aoe]m[eo]|नाम)|(?:N[aoe]m[eo]\s*of\s*Child|Child(?:\s*'?s)?\s*N[aoe]m[eo])|Tr[ao]vel[ea]r|Applicant|Bearer|(?:Given\s*N[aoe]m[eo]s?)|(?:N[aoe]m[eo]|नाम|नामो|थर|Child))[\s\:\;\-\/\.\,\?\=]+/i, '').trim();
+  s = s.replace(/^(?:Nomo[:\s\-]*|Nome[:\s\-]*|Name[:\s\-]*|Namo[:\s\-]*|नाम[:\s\-]*|नामो[:\s\-]*|थर[:\s\-]*|Bearer[:\s\-]*)+/i, '').trim();
+  s = s.replace(/^[\:\;\-\/\.\,\s\?\=]+/, '').trim();
+  s = s.replace(/[\:\;\-\/\.\,\s\?\=]+$/, '').trim();
+
+  let words = s.split(/[\s\-]+/).filter(Boolean);
+  if (!words.length) return null;
+  // Reject if entire name consists of STOP_WORDS
+  if (words.every(w => STOP_WORDS.has(w.toUpperCase().replace(/[^A-Z]/g, '')))) {
+    return null;
+  }
+  // Trim leading stop words
+  while (words.length && STOP_WORDS.has(words[0].toUpperCase().replace(/[^A-Z]/g, ''))) {
+    words.shift();
+  }
+  if (!words.length) return null;
+  const clean = words.join(' ');
+  if (clean.length < 2) return null;
+  return clean.replace(/\w\S*/g, txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+}
+
 /**
  * Universal Multi-Document OCR Parser
  */
@@ -178,14 +216,36 @@ export function parseUniversalDocumentOCR(rawText) {
   let gender = null;
   let panEntityType = null;
 
-  // 0. Dedicated MRZ Detection for Passports (ICAO Doc 9303 TD3: 2 lines of 44 chars)
-  // Line 1: P<COUNTRY SURNAME << GIVEN NAMES <<<<<
-  // Line 2: PASSPORT_NO < CHECK COUNTRY DOB CHECK SEX EXPIRY CHECK ...
-  const mrz1 = rawText.match(/P<([A-Z]{3})([A-Z0-9<]{20,44})/i);
-  const mrz2 = rawText.match(/([A-Z0-9<]{9})([0-9<])([A-Z]{3})([0-9]{6})([0-9<])([MF<])([0-9]{6})/i);
+  // Passport detection pre-flight (ICAO Doc 9303 standard & MRZ)
+  const hasPassportMarker = /PASSPORT|PASSTOT|PASPORT/i.test(rawText) || /P<[A-Za-z0-9<]{5,}/i.test(rawText);
+  const hasNonPassportCard = /TRANSIT\s*PERMIT|ENTRY\s*PERMIT|TOURIST\s*VISA|\bE-VISA\b|\bVISA\s*NO|\bPERMIT\s*NO|\bBIRTH\s*CERTIFICATE/i.test(rawText);
+  const passportMatch = rawText.match(/\b([A-PR-WYa-pr-wy]\d{7,8})\b/i);
+  const isPassportDoc = hasPassportMarker || (!hasNonPassportCard && (/<{3,}/.test(rawText) || passportMatch));
 
-  if (mrz1 || mrz2) {
-    const country = mrz1 ? mrz1[1].toUpperCase() : (mrz2 ? mrz2[3].toUpperCase() : 'UNK');
+  // 0. Dedicated MRZ Detection for Passports (ICAO Doc 9303 TD3: 2 lines of 44 chars)
+  let mrzLine1 = null;
+  let mrzLine2 = null;
+  for (const line of lines) {
+    const clean = line.replace(/\s+/g, '').toUpperCase();
+    if (clean.startsWith('P<') || (clean.length >= 28 && clean.includes('<<<') && !mrzLine1)) {
+      mrzLine1 = clean;
+    } else if (mrzLine1 && clean.length >= 25 && (clean.includes('<') || /\d{6}/.test(clean))) {
+      mrzLine2 = clean;
+    }
+  }
+
+  if (isPassportDoc || mrzLine1 || mrzLine2) {
+    let country = 'UNK';
+    if (mrzLine1 && mrzLine1.startsWith('P<') && mrzLine1.length > 5) {
+      country = mrzLine1.substring(2, 5);
+    } else if (/BHUTAN|DRUK|P<BTN/i.test(rawText)) {
+      country = 'BTN';
+    } else if (/NEPAL|P<NPL/i.test(rawText)) {
+      country = 'NPL';
+    } else if (/INDIA|REPUBLIC\s*OF\s*INDIA|INDIAN|P<IND/i.test(rawText)) {
+      country = 'IND';
+    }
+
     if (country === 'BTN') {
       documentType = 'Bhutanese Passport (ICAO Doc 9303)';
     } else if (country === 'IND') {
@@ -196,45 +256,74 @@ export function parseUniversalDocumentOCR(rawText) {
       documentType = 'International Passport (Third-Country Visitor)';
     }
 
-    if (mrz2) {
-      uid = mrz2[1].replace(/</g, '').toUpperCase();
-      const dobRaw = mrz2[4];
-      const yy = parseInt(dobRaw.substring(0, 2), 10);
-      const mm = dobRaw.substring(2, 4);
-      const dd = dobRaw.substring(4, 6);
-      const fullYy = yy > 30 ? 1900 + yy : 2000 + yy;
-      dob = `${dd}/${mm}/${fullYy}`;
+    if (mrzLine2) {
+      const rawPno = mrzLine2.substring(0, 9).replace(/</g, '').trim();
+      if (rawPno) uid = rawPno;
+      const mrz2Match = mrzLine2.match(/([A-Z0-9<]{9})([0-9<])([A-Z]{3})([0-9]{6})([0-9<])([MF<])([0-9]{6})/);
+      if (mrz2Match) {
+        const dobRaw = mrz2Match[4];
+        const yy = parseInt(dobRaw.substring(0, 2), 10);
+        const mm = dobRaw.substring(2, 4);
+        const dd = dobRaw.substring(4, 6);
+        const fullYy = yy > 30 ? 1900 + yy : 2000 + yy;
+        dob = `${dd}/${mm}/${fullYy}`;
 
-      const expRaw = mrz2[7];
-      const eYy = parseInt(expRaw.substring(0, 2), 10);
-      const eMm = expRaw.substring(2, 4);
-      const eDd = expRaw.substring(4, 6);
-      const fullExpYy = 2000 + eYy;
-      expiryDate = `${eDd}/${eMm}/${fullExpYy}`;
+        const expRaw = mrz2Match[7];
+        const eYy = parseInt(expRaw.substring(0, 2), 10);
+        const eMm = expRaw.substring(2, 4);
+        const eDd = expRaw.substring(4, 6);
+        const fullExpYy = 2000 + eYy;
+        expiryDate = `${eDd}/${eMm}/${fullExpYy}`;
 
-      const s = mrz2[6].toUpperCase();
-      gender = s === 'M' ? 'Male' : (s === 'F' ? 'Female' : null);
+        const s = mrz2Match[6].toUpperCase();
+        gender = s === 'M' ? 'Male' : (s === 'F' ? 'Female' : null);
+      }
     }
 
-    if (mrz1) {
-      const rest = mrz1[2];
-      const parts = rest.split('<<');
+    if (mrzLine1) {
+      let afterCountry = mrzLine1;
+      if (mrzLine1.startsWith('P<') && mrzLine1.length > 5) {
+        afterCountry = mrzLine1.substring(5);
+      } else if (mrzLine1.startsWith('P<')) {
+        afterCountry = mrzLine1.substring(2);
+      }
+      const parts = afterCountry.split('<<');
       const surname = parts[0].replace(/</g, ' ').trim();
       const given = parts[1] ? parts[1].replace(/</g, ' ').trim() : '';
-      name = given ? `${given} ${surname}`.trim() : surname;
+      const cleanSurname = cleanExtractedName(surname) || surname;
+      const cleanGiven = cleanExtractedName(given) || given;
+      const fullName = `${cleanGiven} ${cleanSurname}`.trim();
+      if (fullName) name = fullName;
+    }
+
+    // Visual extraction on passport
+    const passM = rawText.match(/(?:Passport\s*No|Pass\s*No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || passportMatch;
+    if (passM && !uid) uid = passM[1].toUpperCase();
+
+    const gvM = rawText.match(/(?:Given\s*Names?|Given\s*Name)[:\s\-]*([A-Za-z\s]+)/i);
+    const snM = rawText.match(/(?:Surname|Surname\/Nom)[:\s\-]*([A-Za-z\s]+)/i);
+    if (gvM && snM) {
+      const vGiven = cleanExtractedName(gvM[1]) || gvM[1].trim();
+      const vSurname = cleanExtractedName(snM[1]) || snM[1].trim();
+      const vFullName = `${vGiven} ${vSurname}`.trim();
+      if (vFullName && (!name || vFullName.length >= name.length)) {
+        name = vFullName;
+      }
     }
   }
 
   // 1. Multi-Document Category Detection
   const hasNagriktaId = /\b([0-9]{4,8}[-\/][0-9]{2,5})\b/.test(rawText);
-  const isNagrikta = hasNagriktaId || /nepal\s*government|citizenship\s*certificate|nepal\s*citizenship|nagrikta|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा/i.test(rawText);
+  const isNagrikta = !isPassportDoc && (hasNagriktaId || /nepal\s*government|citizenship\s*certificate|nepal\s*citizenship|nagrikta|नेपाल\s*सरकार|नेपाली\s*नागरिकता|नागरिकताको\s*प्रमाणपत्र|नागरिकता\s*प्रमाण|ना[\.\s]*प्र[\.\s]*नं|गृह\s*मन्त्रालय|स्थायी\s*बासस्थान|बाबुको\s*नाम|चितवन|काठमाडौ|पोखरा/i.test(rawText));
 
-  if (/royal government of bhutan|citizen identity card|bhutan.*cid|dzongkhag/i.test(rawText)) {
+  if (!isPassportDoc && /royal government of bhutan|citizen identity card|bhutan.*cid|dzongkhag/i.test(rawText)) {
     documentType = 'Bhutanese Citizen Identity Card (CID)';
     const cidM = rawText.match(/(?:CID|Card No)[:\s\-]*([0-9]{11})/i) || rawText.match(/\b([0-9]{11})\b/);
     if (cidM) uid = cidM[1];
     const dzM = rawText.match(/Dzongkhag[:\s\-]*([A-Za-z\s]+)/i);
     if (dzM) address = `Dzongkhag: ${dzM[1].trim()}`;
+    const nameM = rawText.match(/(?:Name|Name of Bearer)[:\s\-]*([A-Za-z\s]+)/i);
+    if (nameM) name = cleanExtractedName(nameM[1]);
   } else if (isNagrikta && documentType === 'Unknown') {
     documentType = 'Nepali Citizenship Certificate (Nagrikta)';
     const normText = rawText.replace(/[\=\|\_]+/g, '-');
@@ -249,15 +338,11 @@ export function parseUniversalDocumentOCR(rawText) {
     }
     const nameM = rawText.match(/(?:नाम[\s\,]*थर|नाम|Name|Bearer)[\s\:\;\-]+([A-Za-z\u0900-\u097F\s\.]+)/i);
     if (nameM) {
-      const cand = nameM[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
-      if (cand.length >= 2 && !/^(नेपाल|सरकार|नागरिकता|प्रमाणपत्र|NEPAL|GOVERNMENT|CITIZENSHIP)/i.test(cand)) {
-        name = cand;
-      }
+      name = cleanExtractedName(nameM[1]);
     }
     const fatM = rawText.match(/(?:बाबुको[\s\,]*नाम[\s\,]*थर|बाबुको[\s\,]*नाम|बुबाको[\s\,]*नाम|Father[\'s]*\s*Name)[\s\:\;\-]+([A-Za-z\u0900-\u097F\s\.]+)/i);
     if (fatM) {
-      const cand = fatM[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
-      if (cand.length >= 2) fatherName = cand;
+      fatherName = cleanExtractedName(fatM[1]);
     }
     if (/चितवन|रामपुर/i.test(rawText)) {
       address = /रामपुर/i.test(rawText) ? 'Rampur, Chitwan, Nepal' : 'Chitwan, Nepal';
@@ -282,71 +367,59 @@ export function parseUniversalDocumentOCR(rawText) {
         }
       }
     }
-  } else if (/birth certificate|municipal corporation.*birth|name of child|जन्म प्रमाण/i.test(rawText)) {
+  } else if (!isPassportDoc && /birth\s*certificate|municipal\s*corporation.*birth|name\s*of\s*child|जन्म\s*प्रमाण/i.test(rawText)) {
     documentType = 'Birth Certificate (Minor Travel Identity)';
-    const regM = rawText.match(/(?:Registration No|Reg No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
-    if (regM) uid = regM[1];
-    const childM = rawText.match(/(?:Name of Child|Child Name)[:\s\-]*([A-Za-z\s]+)/i);
-    if (childM) name = childM[1].trim();
+    const regM = rawText.match(/(?:Registration\s*No|Rogistrotion\s*No|Reg\s*No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    if (regM) {
+      let regVal = regM[1].trim();
+      if (regVal.startsWith('8-')) regVal = 'B-' + regVal.substring(2);
+      uid = regVal;
+    }
+    const childM = rawText.match(/(?:Name\s*of\s*Child|Child\s*Name|Child)[:\s\-]*([A-Za-z\s]+)/i);
+    if (childM) name = cleanExtractedName(childM[1]);
     const fatM = rawText.match(/Father[:\s\-]*([A-Za-z\s]+)/i);
-    if (fatM) fatherName = fatM[1].trim();
-  } else if (/ssb border|border transit permit|border checkpost|ssb permit/i.test(rawText)) {
+    if (fatM) fatherName = cleanExtractedName(fatM[1]);
+  } else if (/ssb\s*border|border\s*transit\s*permit|border\s*checkpost|ssb\s*permit/i.test(rawText)) {
     documentType = 'Border Transit Permit (SSB Checkpoint)';
-    const pM = rawText.match(/(?:Permit No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    const pM = rawText.match(/(?:Permit\s*No|Pormit\s*No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
     if (pM) uid = pM[1];
-    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
-    if (trM) name = trM[1].trim();
+    const trM = rawText.match(/(?:Traveler|Trovelar|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = cleanExtractedName(trM[1]);
     const rM = rawText.match(/(?:Route)[:\s\-]*([A-Za-z0-9\s\-]+)/i);
     if (rM) address = `Route: ${rM[1].trim()}`;
-  } else if (/bhutan entry permit|department of immigration.*bhutan|entry permit \/ e\-visa|bhutan visa/i.test(rawText)) {
+  } else if (/bhutan\s*entry\s*permit|department\s*of\s*immigration.*bhutan|entry\s*permit\s*\/\s*e\-visa|bhutan\s*visa/i.test(rawText)) {
     documentType = 'Bhutan Entry Permit / Visa';
-    const pM = rawText.match(/(?:Permit No|Visa No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    const pM = rawText.match(/(?:Permit\s*No|Pormit\s*No|Visa\s*No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
     if (pM) uid = pM[1];
-    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
-    if (trM) name = trM[1].trim();
-  } else if (/department of immigration nepal|entry visa \- tourist permit|nepal tourist visa|nepal visa/i.test(rawText)) {
+    const trM = rawText.match(/(?:Traveler|Trovelar|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = cleanExtractedName(trM[1]);
+  } else if (/department\s*of\s*immigration\s*nepal|entry\s*visa\s*\-\s*tourist\s*permit|nepal\s*tourist\s*visa|nepal\s*visa/i.test(rawText)) {
     documentType = 'Nepal Entry Visa / Tourist Permit';
-    const vM = rawText.match(/(?:Visa No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
+    const vM = rawText.match(/(?:Visa\s*No|Permit\s*No)[:\s\-]*([A-Za-z0-9\-\/]+)/i);
     if (vM) uid = vM[1];
-    const trM = rawText.match(/(?:Traveler|Name)[:\s\-]*([A-Za-z\s]+)/i);
-    if (trM) name = trM[1].trim();
-  } else if (/p<btn|kingdom of bhutan.*passport|bhutan.*passport/i.test(rawText)) {
-    documentType = 'Bhutanese Passport (ICAO Doc 9303)';
-    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([A-PR-WYa-pr-wyB]\d{6,7})\b/i);
-    if (passM && !uid) uid = passM[1].toUpperCase();
-    const trM = rawText.match(/(?:Name of Bearer|Name)[:\s\-]*([A-Za-z\s]+)/i);
-    if (trM && !name) name = trM[1].trim();
-  } else if (/p<npl|nepal.*passport/i.test(rawText)) {
-    documentType = 'Nepali Passport (ICAO Doc 9303)';
-    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([A-PR-WYa-pr-wy0-9]{7,9})\b/i);
-    if (passM && !uid) uid = passM[1].toUpperCase();
-  } else if (/passport.*republic of india|भारत गणराज्य.*पासपोर्ट|p<ind/i.test(rawText)) {
-    documentType = 'Indian Passport (ICAO Doc 9303)';
-    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,9})/i) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
-    if (passM && !uid) uid = passM[1].toUpperCase();
-    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
-    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
-    if (gvM && snM && !name) {
-      name = `${gvM[1].trim()} ${snM[1].trim()}`;
-    }
-  } else if (/passport.*(united kingdom|united states|usa|gbr|canada|germany|france|australia|japan)|p<gbr|p<usa|p<can|p<[a-z]{3}|nationality:\s*(gbr|usa|uk)|passport/i.test(rawText)) {
-    if (documentType === 'Unknown') documentType = 'International Passport (Third-Country Visitor)';
-    const passM = rawText.match(/(?:Passport No)[:\s\-]*([A-Za-z0-9]{7,10})/i) || rawText.match(/\b([0-9]{9})\b/) || rawText.match(/\b([A-PR-WYa-pr-wy]\d{7})\b/);
-    if (passM && !uid) uid = passM[1].toUpperCase();
-    const gvM = rawText.match(/Given Name[:\s\-]*([A-Za-z\s]+)/i);
-    const snM = rawText.match(/Surname[:\s\-]*([A-Za-z\s]+)/i);
-    if (gvM && snM && !name) {
-      name = `${gvM[1].trim()} ${snM[1].trim()}`;
-    }
-  } else if (/income tax department|permanent account number|pan card|आयकर विभाग/i.test(rawText)) {
+    const trM = rawText.match(/(?:Traveler|Trovelar|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (trM) name = cleanExtractedName(trM[1]);
+  } else if (!isPassportDoc && /income tax department|permanent account number|pan card|आयकर विभाग/i.test(rawText)) {
     documentType = 'PAN Card (Income Tax Department)';
-  } else if (/driving licence|driving license|motor vehicles|transport department|parivahan/i.test(rawText)) {
+  } else if (!isPassportDoc && /(?:driving licence|driving license|motor vehicles|transport department|parivahan|\b0l\s*no\b|\bdl\s*no\b)/i.test(rawText)) {
     documentType = 'Driving Licence (Motor Vehicles Department)';
-    const dlM = rawText.match(/(?:DL No)[:\s\-]*([A-Za-z0-9\-\s]{10,20})/i) || rawText.match(/\b([A-Z]{2}[0-9]{2}\s?[0-9]{11})\b/i);
-    if (dlM) uid = dlM[1].replace(/\s+/g, '').toUpperCase();
-  } else if (/election commission|voter id|electoral photo|epic no|निर्वाचन आयोग|मतदाता/i.test(rawText)) {
+    const dlM = rawText.match(/(?:DL\s*No|0L\s*No)[:\s\-]*([A-Za-z0-9\-\s]{10,20})/i) || rawText.match(/\b([A-Z0-9]{2}[0-9]{2}\s?[0-9]{11})\b/i);
+    if (dlM) {
+      let candDl = dlM[1].replace(/\s+/g, '').toUpperCase();
+      if (candDl.startsWith('0L')) candDl = 'DL' + candDl.substring(2);
+      uid = candDl;
+    }
+    const nMatch = rawText.match(/(?:Nome|Name|Namo|नाम)[:\s\-]*([A-Za-z\s]+)/i);
+    if (nMatch) name = cleanExtractedName(nMatch[1]);
+    const fMatch = rawText.match(/(?:Father|S\/D\/W|Father'?s?\s*Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (fMatch) fatherName = cleanExtractedName(fMatch[1]);
+  } else if (!isPassportDoc && /election commission|voter id|electoral photo|epic no|निर्वाचन आयोग|मतदाता/i.test(rawText)) {
     documentType = 'Voter ID Card (Election Commission of India)';
-  } else if (/aadhaar|uidai|unique identification|mera aadhaar|meri pehchan|आधार|विशिष्ट पहचान|मेरा आधार|1947|uidai\.gov\.in/i.test(rawText)) {
+    const epicM = rawText.match(/(?:EPIC\s*NO|Card\s*No)[:\s\-]*([A-Z0-9]{10})/i) || rawText.match(/\b([A-Z]{3}[0-9]{7}|[A-Z0-9]{3}[0-9]{7})\b/i);
+    if (epicM) uid = epicM[1].toUpperCase();
+    const eNameM = rawText.match(/(?:Elector'?s?\s*Nome|Elector'?s?\s*Name|नाम|Name)[:\s\-]*([A-Za-z\s]+)/i);
+    if (eNameM) name = cleanExtractedName(eNameM[1]);
+  } else if (!isPassportDoc && /aadhaar|uidai|unique identification|mera aadhaar|meri pehchan|आधार|विशिष्ट पहचान|मेरा आधार|1947|uidai\.gov\.in/i.test(rawText)) {
     if (/address|पता|c\/o|s\/o|w\/o|d\/o|आत्मज|पुत्र|पत्नी|पिता|pin|pincode/i.test(rawText)) {
       documentType = 'Aadhaar Card (Back / Address)';
     } else {
@@ -538,8 +611,9 @@ export function parseUniversalDocumentOCR(rawText) {
       const labeledNameMatch = rawText.match(/(?:Name|नाम|Given Names?|Elector'?s?\s*Name|Traveler|Name\s*of\s*Child)[:\s\-]*([A-Za-z\u0900-\u097F\s\.]+)/i);
       if (labeledNameMatch) {
         const cand = labeledNameMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
-        if (cand.length >= 2 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-          name = cand;
+        const cleaned = cleanExtractedName(cand);
+        if (cleaned && cleaned.length >= 2 && !blacklist.some(b => cleaned.toUpperCase() === b || cleaned.toUpperCase().startsWith(b))) {
+          name = cleaned;
         }
       }
     }
@@ -548,8 +622,9 @@ export function parseUniversalDocumentOCR(rawText) {
       const fMatch = rawText.match(/(?:Father'?s?\s*Name|Husband'?s?\s*Name|S\/O|Relation\s*Name|पिता\s*का\s*नाम|पति\s*का\s*नाम|बाबुको\s*नाम|बुबाको\s*नाम|Father)[:\s\-]*([A-Za-z\u0900-\u097F\s\.]+)/i);
       if (fMatch) {
         const cand = fMatch[1].split(/[\r\n]/)[0].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
-        if (cand.length >= 2 && !blacklist.some(b => cand.toUpperCase() === b || cand.toUpperCase().startsWith(b))) {
-          fatherName = cand;
+        const cleaned = cleanExtractedName(cand);
+        if (cleaned && cleaned.length >= 2 && !blacklist.some(b => cleaned.toUpperCase() === b || cleaned.toUpperCase().startsWith(b))) {
+          fatherName = cleaned;
         }
       }
     }
@@ -560,15 +635,21 @@ export function parseUniversalDocumentOCR(rawText) {
       if (dobLineIndex > 0) {
         for (let j = dobLineIndex - 1; j >= 0; j--) {
           const cand = lines[j].replace(/[^A-Za-z\u0900-\u097F\s\.]/g, '').trim();
-          const upper = cand.toUpperCase();
-          if (cand.length >= 2 && !blacklist.some(b => upper === b || upper.startsWith(b))) {
-            name = cand;
-            break;
+          const cleaned = cleanExtractedName(cand);
+          if (cleaned && cleaned.length >= 2) {
+            const upper = cleaned.toUpperCase();
+            if (!blacklist.some(b => upper === b || upper.startsWith(b))) {
+              name = cleaned;
+              break;
+            }
           }
         }
       }
     }
   }
+
+  if (name) name = cleanExtractedName(name);
+  if (fatherName) fatherName = cleanExtractedName(fatherName);
 
   // Address extraction
   if (!address) {
